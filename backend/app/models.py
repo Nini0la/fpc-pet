@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+def uid() -> str:
+    return str(uuid.uuid4())
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Owned:
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Session(Base):
+    __tablename__ = "auth_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConversationSession(Owned, Base):
+    __tablename__ = "conversation_sessions"
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Message(Owned, Base):
+    __tablename__ = "messages"
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversation_sessions.id"))
+    role: Mapped[str] = mapped_column(String(20))
+    content: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(String(20))
+    __table_args__ = (CheckConstraint("role in ('user','assistant','system')"),)
+
+
+class Thread(Owned, Base):
+    __tablename__ = "threads"
+    title: Mapped[str] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(20), default="active")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    derivation: Mapped[str] = mapped_column(String(100))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (CheckConstraint("state in ('active','dormant','abandoned')"),)
+
+
+class Commitment(Owned, Base):
+    __tablename__ = "commitments"
+    title: Mapped[str] = mapped_column(String(500))
+    state: Mapped[str] = mapped_column(String(20), default="open")
+    deadline_hint: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    effort_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float)
+    derivation: Mapped[str] = mapped_column(String(100))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (CheckConstraint("state in ('open','complete','abandoned','dormant')"),)
+
+
+class Episode(Owned, Base):
+    __tablename__ = "episodes"
+    summary: Mapped[str] = mapped_column(String(1000))
+    actor: Mapped[str] = mapped_column(String(30))
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    derivation: Mapped[str] = mapped_column(String(100), default="user-authored")
+    source: Mapped[str] = mapped_column(String(200), default="explicit episode")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (CheckConstraint("actor in ('user','assistant','joint','discussed_only')"),)
+
+
+class EpisodeThread(Base):
+    __tablename__ = "episode_threads"
+    episode_id: Mapped[str] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), primary_key=True
+    )
+    thread_id: Mapped[str] = mapped_column(
+        ForeignKey("threads.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class AgentEvent(Owned, Base):
+    __tablename__ = "agent_events"
+    external_id: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(50))
+    status: Mapped[str] = mapped_column(String(20), default="handled")
+    __table_args__ = (UniqueConstraint("user_id", "external_id"),)
+
+
+class ProvenanceLink(Owned, Base):
+    __tablename__ = "provenance_links"
+    target_id: Mapped[str] = mapped_column(String(36), index=True)
+    source_type: Mapped[str] = mapped_column(String(30))
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float)
+    derivation: Mapped[str] = mapped_column(String(100))
+    metadata_only: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class SkillRun(Owned, Base):
+    __tablename__ = "skill_runs"
+    event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
+    skill_name: Mapped[str] = mapped_column(String(100))
+    outcome: Mapped[str] = mapped_column(String(30))
