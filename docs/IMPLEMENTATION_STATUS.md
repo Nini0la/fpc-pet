@@ -20,6 +20,7 @@
 | Negated completion boundaries | focused extractor/API tests → `8 failed, 4 passed`; “haven’t/not finished” incorrectly completed the open commitment | focused positive/negative lifecycle tests → `14 passed`; common apostrophe and expanded negations stay open while explicit completion still works |
 | Ambiguous demonstrative recall | focused `this`/`that` E2E test → `2 failed`; response dumped both unrelated assistant records | focused tests → `3 passed`; unresolved demonstratives request a topic and disclose no unrelated history, while a unique immediate referent filters the answer |
 | Fresh-login history hydration | focused component test → failed to find the prior message after login | focused component test → `3 passed`; successful login fetches and renders existing chronological messages immediately |
+| Deployment-selected migration target | focused migration test → ignored `DATABASE_URL` and failed against the unavailable PostgreSQL ini target; async SQLite URL failed on missing `aiosqlite` | focused migration tests → `2 passed`; environment URL overrides the local Compose fallback, supported async forms use sync drivers, secrets stay out of output, and isolated SQLite upgrade/downgrade succeeds |
 
 Tests were added before their corresponding runtime behavior. Configuration and documentation were added after behavioral slices. The persistence regression opens a fresh SQLAlchemy session against the same durable database after the request transaction.
 
@@ -31,7 +32,7 @@ Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic expl
 
 ## Final verification
 
-`make check` passed: backend `40 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. The Alembic initial migration also completed an upgrade/downgrade cycle against an isolated database.
+`make check` passed: backend `42 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. The Alembic initial migration completed a `DATABASE_URL`-selected upgrade/downgrade cycle against an isolated SQLite database (12 tables at revision `0001`; application tables removed on downgrade).
 
 ## Known limits
 
