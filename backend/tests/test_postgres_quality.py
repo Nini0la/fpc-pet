@@ -18,6 +18,7 @@ from app.models import (
     ConversationSession,
     Episode,
     Message,
+    ProvenanceLink,
     Thread,
     User,
 )
@@ -297,3 +298,32 @@ def test_postgres_extracted_titles_and_correction_boundaries_are_contained(pg_cl
         json={"title": "x" * 501, "version": commitment["version"] + 1},
         headers=headers,
     ).status_code == 422
+
+
+def test_postgres_credential_like_chat_stays_out_of_episodic_memory(pg_client):
+    import app.main
+
+    assert login(pg_client).status_code == 200
+    headers = csrf(pg_client)
+    for index, credential in enumerate(
+        [
+            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij",
+            "N7vQ2mX9cL4pR8sT1wY5zA6bD3fG0hJ2kM9nP4q",
+        ]
+    ):
+        response = pg_client.post(
+            "/api/chat/messages",
+            json={
+                "content": f"I deployed pg-credential-canary-{index} with {credential}",
+                "event_id": f"pg-credential-{index}",
+            },
+            headers=headers,
+        )
+        assert response.status_code == 201
+
+    with app.main.SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Episode)) == 0
+        assert db.scalar(select(func.count()).select_from(ProvenanceLink)) == 0
+    assert pg_client.get(
+        "/api/history/recall", params={"q": "pg-credential-canary"}
+    ).json() == []

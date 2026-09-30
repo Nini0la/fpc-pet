@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -35,6 +36,21 @@ class SharedHistoryRecallSkill:
     """Deterministic recall over explicit, non-deleted history evidence."""
 
     _decision_words = re.compile(r"\b(decid(?:e|ed)|conclud(?:e|ed)|agreed?|decision|conclusion)\b")
+    _credential_patterns = (
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b"),
+        re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,255}\b"),
+        re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+        re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,512}\b", re.IGNORECASE),
+        re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b"),
+        re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+        re.compile(
+            r"\b(?:sk-(?:proj-|ant-)?|sk_live_|rk_live_|xox[baprs]-|AIzaSy|"
+            r"glpat-|hf_|npm_|pypi-)[A-Za-z0-9_-]{16,255}\b"
+        ),
+    )
+    _opaque_value = re.compile(
+        r"(?<![A-Za-z0-9_+/=-])([A-Za-z0-9_+/=-]{32,128})(?![A-Za-z0-9_+/=-])"
+    )
     _referent_stop_words = {
         "about",
         "already",
@@ -97,6 +113,27 @@ class SharedHistoryRecallSkill:
     def matches(self, text: str) -> bool:
         return self.parse(text) is not None
 
+    @classmethod
+    def _contains_credential_like_value(cls, text: str) -> bool:
+        if any(pattern.search(text) for pattern in cls._credential_patterns):
+            return True
+        return any(
+            cls._looks_high_entropy(match.group(1)) for match in cls._opaque_value.finditer(text)
+        )
+
+    @staticmethod
+    def _looks_high_entropy(value: str) -> bool:
+        if not (re.search(r"[A-Z]", value) and re.search(r"[a-z]", value)):
+            return False
+        if not re.search(r"[0-9]", value) or len(set(value)) / len(value) < 0.5:
+            return False
+        entropy = -sum(
+            (value.count(character) / len(value))
+            * math.log2(value.count(character) / len(value))
+            for character in set(value)
+        )
+        return entropy >= 4.5
+
     def actor_for(self, text: str) -> str | None:
         lower = " ".join(text.lower().split())
         # Episodic capture is default-deny. State-setting utterances have their
@@ -104,7 +141,9 @@ class SharedHistoryRecallSkill:
         # chat must not silently become shared-history claims.
         if lower.startswith(("hang onto this idea", "i need to ")) or lower.endswith("?"):
             return None
-        if re.search(r"\b(?:password|passcode|api[ _-]?key|secret|token)\b", lower):
+        if self._contains_credential_like_value(text) or re.search(
+            r"\b(?:password|passcode|api[ _-]?key|secret|token)\b", lower
+        ):
             return None
         discussed_markers = (
             "we only discussed ",

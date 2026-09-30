@@ -226,6 +226,63 @@ def test_ephemeral_sensitive_and_interrogative_messages_are_not_episodes(client)
 
 
 @pytest.mark.parametrize(
+    ("credential", "event_id"),
+    [
+        ("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij", "github-classic"),
+        ("github_pat_" + "Ab1_" * 20, "github-fine-grained"),
+        ("AKIAIOSFODNN7EXAMPLE", "aws-access-key"),
+        ("Bearer mF_9.B5f-4.1JqM", "bearer"),
+        (
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+            "c2lnbmF0dXJlX3N5bnRoZXRpYw",
+            "jwt",
+        ),
+        ("-----BEGIN PRIVATE KEY-----", "private-key"),
+        ("sk-proj-Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8Qr9St0Uv", "openai"),
+        ("sk_live_Ab1Cd2Ef3Gh4Ij5Kl6Mn7Op8", "stripe"),
+        ("xoxb-123456789012-AbCdEfGhIjKlMnOpQrStUvWx", "slack"),
+        ("AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz01234567", "google"),
+        ("N7vQ2mX9cL4pR8sT1wY5zA6bD3fG0hJ2kM9nP4q", "high-entropy"),
+    ],
+    ids=[
+        "github-classic",
+        "github-fine-grained",
+        "aws-access-key",
+        "bearer",
+        "jwt",
+        "private-key",
+        "openai",
+        "stripe",
+        "slack",
+        "google",
+        "high-entropy",
+    ],
+)
+def test_credential_like_values_are_not_promoted_or_recallable(client, credential, event_id):
+    from sqlalchemy import func, select
+
+    import app.main
+    from app.models import Episode, ProvenanceLink
+
+    login(client)
+    response = client.post(
+        "/api/chat/messages",
+        json={
+            "content": f"I deployed credential-canary with {credential}",
+            "event_id": f"credential-{event_id}",
+        },
+        headers=csrf(client),
+    )
+    assert response.status_code == 201
+
+    with app.main.SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(Episode)) == 0
+        assert db.scalar(select(func.count()).select_from(ProvenanceLink)) == 0
+    if client.get("/api/history/recall", params={"q": "credential-canary"}).json():
+        pytest.fail("credential-like chat was promoted into recall")
+
+
+@pytest.mark.parametrize(
     "question",
     ["What have we been doing?"],
 )
