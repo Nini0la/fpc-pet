@@ -17,6 +17,9 @@
 | Chat-created shared history and conversational recall | focused E2E tests → `5 failed` (zero Episodes; canned reply) | focused E2E tests → `5 passed`; actor-attributed Episodes and sourced recall across auth sessions |
 | Recall intent facets and history contamination | focused seven-phrase E2E test → failed at missing injected clock (`unexpected keyword argument 'clock'`) | focused E2E tests → `2 passed`; all seven spec questions filter by topic, actor, decision, chronology, and week while recall turns create no Episodes |
 | Explicit state in shared-history recall | focused E2E test → commitment absent from recall despite its message provenance | focused E2E test → `1 passed`; non-deleted commitments/threads join chronology with message sources while deleted state stays excluded |
+| Negated completion boundaries | focused extractor/API tests → `8 failed, 4 passed`; “haven’t/not finished” incorrectly completed the open commitment | focused positive/negative lifecycle tests → `14 passed`; common apostrophe and expanded negations stay open while explicit completion still works |
+| Ambiguous demonstrative recall | focused `this`/`that` E2E test → `2 failed`; response dumped both unrelated assistant records | focused tests → `3 passed`; unresolved demonstratives request a topic and disclose no unrelated history, while a unique immediate referent filters the answer |
+| Fresh-login history hydration | focused component test → failed to find the prior message after login | focused component test → `3 passed`; successful login fetches and renders existing chronological messages immediately |
 
 Tests were added before their corresponding runtime behavior. Configuration and documentation were added after behavioral slices. The persistence regression opens a fresh SQLAlchemy session against the same durable database after the request transaction.
 
@@ -28,7 +31,7 @@ Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic expl
 
 ## Final verification
 
-`make check` passed: backend `25 passed`, Ruff clean, mypy clean; frontend `2 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. The Alembic initial migration also completed an upgrade/downgrade cycle against an isolated database.
+`make check` passed: backend `40 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. The Alembic initial migration also completed an upgrade/downgrade cycle against an isolated database.
 
 ## Known limits
 

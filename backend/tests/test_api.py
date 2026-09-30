@@ -228,6 +228,61 @@ def test_chat_recall_is_chronological_sourced_and_uncertainty_aware(client, ques
         assert "confidence " in line
 
 
+@pytest.mark.parametrize("referent", ["this", "that"])
+def test_ambiguous_assistant_recall_does_not_dump_unrelated_history(client, referent):
+    login(client)
+    h = csrf(client)
+    for event_id, content in [
+        ("unrelated-launch", "You told me about the launch checklist."),
+        ("unrelated-api", "You found the API documentation."),
+        ("unrelated-context", "Can you remind me what we were discussing?"),
+    ]:
+        client.post(
+            "/api/chat/messages",
+            json={"content": content, "event_id": event_id},
+            headers=h,
+        )
+
+    client.post(
+        "/api/chat/messages",
+        json={
+            "content": f"What did you already tell me about {referent}?",
+            "event_id": f"ambiguous-{referent}",
+        },
+        headers=h,
+    )
+
+    answer = client.get("/api/chat/messages").json()[-1]["content"]
+    assert "which topic" in answer.lower() or "enough context" in answer.lower()
+    assert "launch checklist" not in answer
+    assert "API documentation" not in answer
+
+
+def test_demonstrative_assistant_recall_uses_a_unique_immediate_referent(client):
+    login(client)
+    h = csrf(client)
+    for event_id, content in [
+        ("referent-launch", "You told me about the launch checklist."),
+        ("referent-api", "You found the API documentation."),
+        ("referent-context", "Let's return to the launch checklist."),
+    ]:
+        client.post(
+            "/api/chat/messages",
+            json={"content": content, "event_id": event_id},
+            headers=h,
+        )
+
+    client.post(
+        "/api/chat/messages",
+        json={"content": "What did you already tell me about that?", "event_id": "resolved-that"},
+        headers=h,
+    )
+
+    answer = client.get("/api/chat/messages").json()[-1]["content"]
+    assert "You told me about the launch checklist." in answer
+    assert "API documentation" not in answer
+
+
 def test_all_spec_recall_phrases_filter_history_without_contaminating_it(client):
     import app.main
     from app.agent import AgentRuntime
@@ -320,8 +375,8 @@ def test_all_spec_recall_phrases_filter_history_without_contaminating_it(client)
         ),
         (
             "What did you already tell me about this?",
-            ["You helped me archive old files.", "You told me about the launch checklist."],
-            ["Nebius project", "deployment workflow"],
+            ["Which topic do you mean?"],
+            ["archive old files", "launch checklist", "Nebius project", "deployment workflow"],
         ),
         (
             "What have we tried?",
@@ -337,7 +392,8 @@ def test_all_spec_recall_phrases_filter_history_without_contaminating_it(client)
         )
         assert response.status_code == 201
         answer = client.get("/api/chat/messages").json()[-1]["content"]
-        assert "source" in answer
+        if "about this" not in question:
+            assert "source" in answer
         assert all(text in answer for text in included)
         assert all(text not in answer for text in excluded)
 
@@ -474,6 +530,35 @@ def test_completion_and_thread_lifecycle_transitions(client):
         headers=h,
     )
     assert client.get("/api/threads").json()[0]["state"] == "active"
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        "I haven't finished the frontend",
+        "I haven’t finished the frontend",
+        "I have not finished the frontend",
+        "I didn't finish the frontend",
+        "I did not finish the frontend",
+        "The frontend is not finished",
+    ],
+)
+def test_negated_completion_keeps_an_open_commitment_open(client, update):
+    login(client)
+    h = csrf(client)
+    client.post(
+        "/api/chat/messages",
+        json={"content": "I need to finish the frontend", "event_id": "negated-open"},
+        headers=h,
+    )
+
+    client.post(
+        "/api/chat/messages",
+        json={"content": update, "event_id": "negated-update"},
+        headers=h,
+    )
+
+    assert client.get("/api/commitments").json()[0]["state"] == "open"
 
 
 def test_pronoun_completion_and_abandonment_use_recent_matching_state(client):

@@ -1,6 +1,6 @@
 "use client";
 import {FormEvent,useState} from "react";
-type Message={id:string;role:"user"|"assistant";content:string};
+export type Message={id:string;role:"user"|"assistant";content:string};
 const API=process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 function cookie(name:string){return document.cookie.split("; ").find(x=>x.startsWith(name+"="))?.split("=")[1]??""}
 export default function Chat({initialMessages=[]}:{initialMessages?:Message[]}){const [messages,setMessages]=useState(initialMessages);const [text,setText]=useState("");async function send(e:FormEvent){e.preventDefault();if(!text.trim())return;await fetch(`${API}/api/chat/messages`,{method:"POST",credentials:"include",headers:{"content-type":"application/json","x-csrf-token":decodeURIComponent(cookie("csrf_token"))},body:JSON.stringify({content:text,event_id:crypto.randomUUID()})});const r=await fetch(`${API}/api/chat/messages`,{credentials:"include"});setMessages(await r.json());setText("")}return <main><h1>Continuity</h1><section aria-live="polite">{messages.map(m=><p className={m.role} key={m.id}><b>{m.role}</b> {m.content}</p>)}</section><form onSubmit={send}><label htmlFor="message">Message</label><textarea id="message" maxLength={4000} value={text} onChange={e=>setText(e.target.value)}/><small>{text.length} / 4000</small><button>Send</button></form></main>}

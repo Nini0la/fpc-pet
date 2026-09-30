@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .clock import Clock, SystemClock
-from .models import Commitment, Episode, ProvenanceLink, Thread
+from .models import Commitment, Episode, Message, ProvenanceLink, Thread
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class RecallIntent:
     earliest_only: bool = False
     since: datetime | None = None
     exclude_discussed_only: bool = False
+    needs_referent: bool = False
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,24 @@ class SharedHistoryRecallSkill:
     """Deterministic recall over explicit, non-deleted history evidence."""
 
     _decision_words = re.compile(r"\b(decid(?:e|ed)|conclud(?:e|ed)|agreed?|decision|conclusion)\b")
+    _referent_stop_words = {
+        "about",
+        "already",
+        "and",
+        "did",
+        "found",
+        "from",
+        "have",
+        "lets",
+        "return",
+        "that",
+        "the",
+        "this",
+        "to",
+        "told",
+        "what",
+        "you",
+    }
 
     def __init__(self, clock: Clock | None = None) -> None:
         self.clock = clock or SystemClock()
@@ -64,8 +83,12 @@ class SharedHistoryRecallSkill:
 
         match = re.fullmatch(r"what did you already tell me about (.+)", normalized)
         if match:
-            topic = None if match.group(1) in {"this", "that"} else match.group(1)
-            return RecallIntent(topic=topic, actor="assistant")
+            referent = match.group(1)
+            return RecallIntent(
+                topic=None if referent in {"this", "that"} else referent,
+                actor="assistant",
+                needs_referent=referent in {"this", "that"},
+            )
 
         if re.fullmatch(r"what have we (?:been doing|tried)", normalized):
             return RecallIntent(exclude_discussed_only=normalized.endswith("tried"))
@@ -172,7 +195,51 @@ class SharedHistoryRecallSkill:
             evidence, key=lambda item: (self._utc_naive(item.created_at), item.source)
         )
 
-    def answer(self, db: Session, user_id: str, text: str) -> str:
+    @classmethod
+    def _referent_words(cls, text: str) -> set[str]:
+        return {
+            word
+            for word in re.findall(r"[a-z0-9]+", text.lower())
+            if len(word) > 2 and word not in cls._referent_stop_words
+        }
+
+    def _resolve_immediate_referent(
+        self,
+        db: Session,
+        user_id: str,
+        conversation_id: str,
+        current_message_id: str,
+        evidence: list[HistoryEvidence],
+    ) -> list[HistoryEvidence]:
+        previous = db.scalar(
+            select(Message)
+            .where(
+                Message.user_id == user_id,
+                Message.conversation_id == conversation_id,
+                Message.role == "user",
+                Message.id != current_message_id,
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+        if previous is None:
+            return []
+        context_words = self._referent_words(previous.content)
+        matches = [
+            item
+            for item in evidence
+            if len(context_words & self._referent_words(item.summary)) >= 2
+        ]
+        return matches if len(matches) == 1 else []
+
+    def answer(
+        self,
+        db: Session,
+        user_id: str,
+        text: str,
+        conversation_id: str | None = None,
+        current_message_id: str | None = None,
+    ) -> str:
         intent = self.parse(text)
         if intent is None:
             return "I couldn’t identify a supported shared-history recall intent."
@@ -180,6 +247,19 @@ class SharedHistoryRecallSkill:
         evidence = self._evidence(db, user_id)
         if intent.actor:
             evidence = [item for item in evidence if item.actor == intent.actor]
+        if intent.needs_referent:
+            evidence = (
+                self._resolve_immediate_referent(
+                    db, user_id, conversation_id, current_message_id, evidence
+                )
+                if conversation_id and current_message_id
+                else []
+            )
+            if not evidence:
+                return (
+                    "I don’t have enough context to resolve that reference. "
+                    "Which topic do you mean?"
+                )
         if intent.since:
             since = self._utc_naive(intent.since)
             evidence = [

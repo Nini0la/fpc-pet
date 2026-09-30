@@ -39,8 +39,12 @@ class StateExtractor:
             "reactivate": "reactivate",
             "dormant": "dormant",
         }
+        completion_negated = re.search(
+            r"\b(?:not|never|haven't|hasn't|hadn't)(?:\s+\w+){0,3}\s+finished\b",
+            lower.replace("’", "'"),
+        )
         for needle, state in transitions.items():
-            if needle in lower:
+            if needle in lower and not (state == "complete" and completion_negated):
                 return StateProposal(
                     "transition", title=normalized, transition=state, confidence=0.95
                 )

@@ -151,7 +151,13 @@ class AgentRuntime:
                         )
                     )
             if recalling_history:
-                reply = self.history.answer(db, user_id, event.content)
+                reply = self.history.answer(
+                    db,
+                    user_id,
+                    event.content,
+                    conversation_id=event.conversation_id,
+                    current_message_id=user_message.id,
+                )
             elif proposal.kind == "clarification":
                 reply = "What should I remind you about?"
             else:

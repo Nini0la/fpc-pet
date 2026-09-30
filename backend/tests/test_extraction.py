@@ -1,3 +1,5 @@
+import pytest
+
 from app.runtime import StateExtractor
 
 
@@ -38,3 +40,18 @@ def test_transitions_are_detected():
     assert e.extract("I am abandoning the portfolio idea").transition == "abandon"
     assert e.extract("Let's reactivate the portfolio idea").transition == "reactivate"
     assert e.extract("Make the portfolio idea dormant").transition == "dormant"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I haven't finished the frontend",
+        "I haven’t finished the frontend",
+        "I have not finished the frontend",
+        "I didn't finish the frontend",
+        "I did not finish the frontend",
+        "The frontend is not finished",
+    ],
+)
+def test_negated_completion_is_not_a_completion_transition(text):
+    assert StateExtractor().extract(text).transition is None
