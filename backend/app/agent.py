@@ -7,15 +7,15 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .clock import Clock, SystemClock
 from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .history import SharedHistoryRecallSkill
-from .models import AgentEvent, Commitment, Episode, Message, ProvenanceLink, SkillRun, Thread
-from .persistence import MutationResult, atomic_update
+from .models import AgentEvent, Commitment, Episode, ProvenanceLink, SkillRun, Thread
+from .persistence import MutationResult, append_message, atomic_update
 from .runtime import DeterministicModel, StateExtractor, StateProposal
 
 
@@ -50,9 +50,14 @@ class AgentRuntime:
         self.evening = EveningReflectionSkill()
 
     @staticmethod
+    def _conversation_target(event: RuntimeEvent) -> str | None:
+        return event.conversation_id if event.kind == "user_message" else None
+
+    @staticmethod
     def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
         relevant = {
             "content": event.content,
+            "conversation_target": AgentRuntime._conversation_target(event),
             "intended_local_date": (
                 event.intended_local_date.isoformat() if event.intended_local_date else None
             ),
@@ -67,13 +72,6 @@ class AgentRuntime:
         if not hmac.compare_digest(prior.request_fingerprint, fingerprint):
             raise IdempotencyConflict("Idempotency key already used for different input")
         return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
-
-    @staticmethod
-    def _next_message_ordinal(db: Session, conversation_id: str) -> int:
-        current = db.scalar(
-            select(func.max(Message.ordinal)).where(Message.conversation_id == conversation_id)
-        )
-        return (current or 0) + 1
 
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
         fingerprint = self._fingerprint(user_id, event)
@@ -109,17 +107,15 @@ class AgentRuntime:
         logical_idempotent = False
         reflection_handled = False
         if event.kind == "user_message" and event.content and event.conversation_id:
-            user_message = Message(
+            user_message = append_message(
+                db,
                 user_id=user_id,
                 conversation_id=event.conversation_id,
                 role="user",
                 actor="user",
                 content=event.content,
-                ordinal=self._next_message_ordinal(db, event.conversation_id),
                 created_at=self.clock.now(),
             )
-            db.add(user_message)
-            db.flush()
             reflection_handled = self.evening.capture_if_pending(
                 db,
                 user_id,
@@ -254,16 +250,14 @@ class AgentRuntime:
                 reply = "What should I remind you about?"
             else:
                 reply = self.model.respond(event.content)
-            db.add(
-                Message(
-                    user_id=user_id,
-                    conversation_id=event.conversation_id,
-                    role="assistant",
-                    actor="assistant",
-                    content=reply,
-                    ordinal=self._next_message_ordinal(db, event.conversation_id),
-                    created_at=self.clock.now(),
-                )
+            append_message(
+                db,
+                user_id=user_id,
+                conversation_id=event.conversation_id,
+                role="assistant",
+                actor="assistant",
+                content=reply,
+                created_at=self.clock.now(),
             )
         elif event.kind == "morning_briefing":
             logical_idempotent = not self.morning.run(

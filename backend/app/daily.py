@@ -6,22 +6,15 @@ from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from .persistence import append_message, get_or_create_conversation
 
 POLICY_VERSION = "m2-v1"
 BRIEFING_SECTION_LIMIT = 50
 REFLECTION_RESPONSE_WINDOW = timedelta(hours=12)
-
-
-def next_message_ordinal(db: Session, message_model: Any, conversation_id: str) -> int:
-    current = db.scalar(
-        select(func.max(message_model.ordinal)).where(
-            message_model.conversation_id == conversation_id
-        )
-    )
-    return (current or 0) + 1
 
 
 @dataclass(frozen=True)
@@ -112,11 +105,9 @@ class MorningBriefingSkill:
     ) -> bool:
         from .models import (
             Commitment,
-            ConversationSession,
             DailyBriefing,
             Episode,
             JournalEntry,
-            Message,
             ProvenanceLink,
             Thread,
             User,
@@ -275,26 +266,16 @@ class MorningBriefingSkill:
             db.expire_all()
             return False
 
-        conversation = db.scalar(
-            select(ConversationSession)
-            .where(ConversationSession.user_id == user_id)
-            .order_by(ConversationSession.created_at)
-        )
-        if conversation is None:
-            conversation = ConversationSession(user_id=user_id, created_at=now)
-            db.add(conversation)
-            db.flush()
-        message = Message(
+        conversation = get_or_create_conversation(db, user_id, created_at=now)
+        message = append_message(
+            db,
             user_id=user_id,
             conversation_id=conversation.id,
             role="assistant",
             actor="assistant",
             content=content,
-            ordinal=next_message_ordinal(db, Message, conversation.id),
             created_at=now,
         )
-        db.add(message)
-        db.flush()
         briefing.message_id = message.id
         episode = Episode(
             user_id=user_id,
@@ -346,9 +327,7 @@ class EveningReflectionSkill:
         intended_local_date: date | None = None,
     ) -> bool:
         from .models import (
-            ConversationSession,
             Episode,
-            Message,
             ProvenanceLink,
             ReflectionPrompt,
             User,
@@ -381,26 +360,16 @@ class EveningReflectionSkill:
         except IntegrityError:
             db.expire_all()
             return False
-        conversation = db.scalar(
-            select(ConversationSession)
-            .where(ConversationSession.user_id == user_id)
-            .order_by(ConversationSession.created_at)
-        )
-        if conversation is None:
-            conversation = ConversationSession(user_id=user_id, created_at=now)
-            db.add(conversation)
-            db.flush()
-        message = Message(
+        conversation = get_or_create_conversation(db, user_id, created_at=now)
+        message = append_message(
+            db,
             user_id=user_id,
             conversation_id=conversation.id,
             role="assistant",
             actor="assistant",
             content=self.checkin,
-            ordinal=next_message_ordinal(db, Message, conversation.id),
             created_at=now,
         )
-        db.add(message)
-        db.flush()
         prompt.message_id = message.id
         episode = Episode(
             user_id=user_id,

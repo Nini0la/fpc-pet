@@ -58,6 +58,9 @@ class Session(Base):
 class ConversationSession(Owned, Base):
     __tablename__ = "conversation_sessions"
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_conversation_sessions_user_id"),
+    )
 
 
 class Message(Owned, Base):
@@ -67,7 +70,10 @@ class Message(Owned, Base):
     content: Mapped[str] = mapped_column(Text)
     actor: Mapped[str] = mapped_column(String(20))
     ordinal: Mapped[int] = mapped_column(Integer, default=0)
-    __table_args__ = (CheckConstraint("role in ('user','assistant','system')"),)
+    __table_args__ = (
+        CheckConstraint("role in ('user','assistant','system')"),
+        UniqueConstraint("conversation_id", "ordinal", name="uq_messages_conversation_ordinal"),
+    )
 
 
 class Thread(Owned, Base):

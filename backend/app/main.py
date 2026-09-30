@@ -19,7 +19,6 @@ from .daily import POLICY_VERSION, local_date_for
 from .models import (
     Base,
     Commitment,
-    ConversationSession,
     DailyBriefing,
     Episode,
     JournalEntry,
@@ -31,7 +30,7 @@ from .models import (
     User,
     utcnow,
 )
-from .persistence import MutationResult, atomic_update
+from .persistence import MutationResult, atomic_update, get_or_create_conversation
 from .security import resolve_login_username
 
 ENV = os.getenv("APP_ENV", "production")
@@ -195,15 +194,7 @@ def send_message(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    conversation = db.scalar(
-        select(ConversationSession)
-        .where(ConversationSession.user_id == user.id)
-        .order_by(ConversationSession.created_at)
-    )
-    if not conversation:
-        conversation = ConversationSession(user_id=user.id)
-        db.add(conversation)
-        db.flush()
+    conversation = get_or_create_conversation(db, user.id)
     try:
         result = runtime.handle(
             db, user.id, RuntimeEvent(body.event_id, "user_message", body.content, conversation.id)

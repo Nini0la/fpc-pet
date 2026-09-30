@@ -18,6 +18,9 @@ M2 was implemented in vertical RED → GREEN slices. Representative observed cyc
 | Clause-aware evening extraction | the exact profiling/portfolio contrast completed the wrong item, and `finish the frontend` did not match `finished the frontend` | explicit clause boundaries, negation/contrast, unique immediate `it`, and safe action/article normalization pass; ambiguity is inert |
 | Bounded Today/briefing state | 150 commitments and 150 threads were all returned and persisted | stable 50-item slices with totals and `has_more` pass for API and stored briefing sections |
 | Midnight and catch-up dates | post-midnight and DST answers found no prompt; missed triggers were assigned to execution day | 12-hour latest-awaiting prompt binding and validated intended-day catch-up/idempotency pass |
+| Concurrent chat authority | forced simultaneous morning/evening runs created two conversations and forced user-message runs reused ordinals | one DB-enforced conversation per user plus row-locked appends produce one chat and distinct, strictly increasing ordinals |
+| Conversation-target idempotency | the same key and payload replayed when pointed at another conversation | same-target requests replay while a retargeted key conflicts |
+| M2 concurrency migration | duplicate pre-existing conversations and ordinals survived at migration head | reversible `0003` consolidates conversations, renumbers messages, and applies both uniqueness constraints on SQLite and PostgreSQL |
 
 Tests were written and observed failing before the corresponding runtime/UI behavior. Documentation followed the behavioral work.
 
@@ -31,12 +34,14 @@ Tests were written and observed failing before the corresponding runtime/UI beha
 - Tenant-scoped bounded Today and journal-history APIs plus minimal Today rendering. Today and persisted briefing commitment/thread collections have a documented 50-item cap and explicit totals/`has_more` metadata.
 - Injected clock, IANA timezones/`zoneinfo`, midnight and DST prompt binding, validated one-day intended-date catch-up, catch-up idempotency, and real PostgreSQL concurrent-trigger coverage.
 - Explicit Alembic `0002` upgrade and downgrade; CI already runs the full PostgreSQL suite.
+- Race-safe conversation get-or-create, tenant-scoped row-locked message appends, DB uniqueness for one conversation per user and `(conversation_id, ordinal)`, and conversation-target-bound request fingerprints.
+- Explicit reversible Alembic `0003`, including deterministic cleanup of pre-constraint duplicate conversations/messages and a real PostgreSQL migration cycle.
 
 ## Final verification
 
-- `POSTGRES_TEST_URL=… make check` passed: backend `91 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
-- Focused real-PostgreSQL M2 quality suite: `14 passed`, including concurrent same-day morning triggers producing exactly one logical briefing/proactive message.
-- Real-PostgreSQL Alembic cycle succeeded: `upgrade head` (`0001` → `0002`), `downgrade 0001`, then `upgrade head` again.
+- `POSTGRES_TEST_URL=… make check` passed: backend `97 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
+- Focused migration/PostgreSQL quality suite: `24 passed`, including forced simultaneous morning/evening and user-message requests with one conversation, strictly increasing transaction-contiguous ordinals, and no HTTP 500s.
+- Real-PostgreSQL Alembic `0003` cycle succeeded: upgrade from `0002` with duplicate legacy rows, downgrade to `0002`, then upgrade to head again.
 
 ## Known limits
 

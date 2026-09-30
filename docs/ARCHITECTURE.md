@@ -4,7 +4,7 @@
 
 One FastAPI service and one Next.js app use PostgreSQL as production authority. SQLite remains limited to isolated API/unit tests. There is no broker, vector database, graph orchestration engine, or private FPC machinery. Conversation segmentation is internal; chat, morning briefings, and evening check-ins share one continuing relationship.
 
-`AgentRuntime.handle(RuntimeEvent)` is the only event entry point for user and scheduled events. `MorningBriefingSkill` and `EveningReflectionSkill` are thin deterministic skills called by that runtime. A transaction records the `AgentEvent`, `SkillRun`, proactive/user messages, journal/state mutations, Episodes, and provenance together. Model proposals never receive an ORM session. `ModelRouter` remains the future live-provider boundary; deterministic replies are explicitly development/test-only.
+`AgentRuntime.handle(RuntimeEvent)` is the only event entry point for user and scheduled events. `MorningBriefingSkill` and `EveningReflectionSkill` are thin deterministic skills called by that runtime. A transaction records the `AgentEvent`, `SkillRun`, proactive/user messages, journal/state mutations, Episodes, and provenance together. Request fingerprints bind the user, event kind/payload/date, and normalized conversation target for user messages: the same idempotency key replays only for the same target and conflicts if retargeted. Model proposals never receive an ORM session. `ModelRouter` remains the future live-provider boundary; deterministic replies are explicitly development/test-only.
 
 ### Daily loop
 
@@ -16,11 +16,11 @@ An evening answer is stored unchanged in `JournalEntry.original_content`, with o
 
 ### Persistence and APIs
 
-All durable records are UUID-owned by a user and tenant filters are mandatory. Mutable threads, commitments, and episodes retain versioned correction/deletion behavior. Derived state has confidence, derivation, and `ProvenanceLink`; audit rows store observable action/reason metadata, not hidden chain-of-thought or prompts. Message ordinals preserve same-chat ordering under a controllable clock.
+All durable records are UUID-owned by a user and tenant filters are mandatory. The current product model has exactly one persistent `ConversationSession` per user, enforced by a unique `user_id`. Creation is conflict-safe, and every message append locks that tenant-scoped conversation row before allocating the next ordinal. A unique `(conversation_id, ordinal)` constraint is the final ordering authority, so concurrent proactive and user-message transactions remain in one chat with distinct, strictly increasing, transaction-contiguous ordinals. Mutable threads, commitments, and episodes retain versioned correction/deletion behavior. Derived state has confidence, derivation, and `ProvenanceLink`; audit rows store observable action/reason metadata, not hidden chain-of-thought or prompts.
 
 `GET /api/today` returns only the authenticated user's local-day briefing, Power List, resurfaced items, reflection state, and stable oldest-first slices of open commitments and active threads. Each state slice is capped at 50; `collection_meta` supplies `limit`, `returned_count`, `total_count`, and `has_more`. Persisted briefing collection sections are also capped at 50 and include equivalent metadata for commitments and threads. `GET /api/history/journals` is tenant-scoped with bounded query, limit, and offset. The Next.js page renders a minimal Today surface alongside chat; full navigation/polish remains M5.
 
-PostgreSQL is migrated with explicit Alembic revisions. `0001` is the M1 foundation; `0002` adds timezone/priority/message-order fields and daily briefings, reflection prompts, and journal entries with a complete downgrade.
+PostgreSQL is migrated with explicit Alembic revisions. `0001` is the M1 foundation; `0002` adds timezone/priority/message-order fields and daily briefings, reflection prompts, and journal entries. Reversible `0003` consolidates any pre-existing per-user conversations, deterministically renumbers their messages, and adds the conversation and ordinal uniqueness constraints.
 
 ## Deferred
 

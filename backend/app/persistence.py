@@ -1,17 +1,89 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from .models import ConversationSession, Message
 
 
 class MutationResult(Enum):
     UPDATED = "updated"
     CONFLICT = "conflict"
     NOT_FOUND = "not_found"
+
+
+def get_or_create_conversation(
+    db: Session, user_id: str, *, created_at: datetime | None = None
+) -> ConversationSession:
+    """Return the user's sole conversation, tolerating a concurrent creator."""
+    conversation = db.scalar(
+        select(ConversationSession).where(ConversationSession.user_id == user_id)
+    )
+    if conversation is not None:
+        return conversation
+
+    candidate = ConversationSession(user_id=user_id, created_at=created_at)
+    try:
+        with db.begin_nested():
+            db.add(candidate)
+            db.flush()
+        return candidate
+    except IntegrityError:
+        db.expire_all()
+        conversation = db.scalar(
+            select(ConversationSession).where(ConversationSession.user_id == user_id)
+        )
+        if conversation is None:
+            raise
+        return conversation
+
+
+def append_message(
+    db: Session,
+    *,
+    user_id: str,
+    conversation_id: str,
+    role: str,
+    actor: str,
+    content: str,
+    created_at: datetime,
+) -> Message:
+    """Append under a tenant-scoped conversation row lock."""
+    conversation = db.scalar(
+        select(ConversationSession)
+        .where(
+            ConversationSession.id == conversation_id,
+            ConversationSession.user_id == user_id,
+        )
+        .with_for_update()
+    )
+    if conversation is None:
+        raise ValueError("Unknown conversation")
+    current = db.scalar(
+        select(func.max(Message.ordinal)).where(
+            Message.conversation_id == conversation_id,
+            Message.user_id == user_id,
+        )
+    )
+    message = Message(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        role=role,
+        actor=actor,
+        content=content,
+        ordinal=(current or 0) + 1,
+        created_at=created_at,
+    )
+    db.add(message)
+    db.flush()
+    conversation.last_activity_at = created_at
+    return message
 
 
 def atomic_update(

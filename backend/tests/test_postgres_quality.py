@@ -21,6 +21,7 @@ from app.models import (
     Episode,
     Message,
     ProvenanceLink,
+    ReflectionPrompt,
     Thread,
     User,
 )
@@ -153,21 +154,13 @@ def seed_runtime(pg_sessions):
         return user.id, conversation.id
 
 
-def test_runtime_transition_uses_atomic_cas(pg_sessions, monkeypatch):
-    import app.agent
-
+def test_runtime_transitions_are_serialized_by_conversation_lock(pg_sessions):
     user_id, conversation_id = seed_runtime(pg_sessions)
     rendezvous = Barrier(2)
-    real_atomic_update = atomic_update
-
-    def synchronized_update(*args, **kwargs):
-        rendezvous.wait(timeout=10)
-        return real_atomic_update(*args, **kwargs)
-
-    monkeypatch.setattr(app.agent, "atomic_update", synchronized_update)
 
     def handle(event_id: str):
         with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
             return AgentRuntime().handle(
                 db,
                 user_id,
@@ -178,10 +171,10 @@ def test_runtime_transition_uses_atomic_cas(pg_sessions, monkeypatch):
         futures = [pool.submit(handle, "a"), pool.submit(handle, "b")]
         outcomes = [future.exception() or future.result() for future in futures]
 
-    assert sum(isinstance(outcome, app.agent.ConcurrentMutation) for outcome in outcomes) == 1
+    assert all(isinstance(outcome, dict) for outcome in outcomes)
     with pg_sessions() as db:
         commitment = db.scalar(select(Commitment).where(Commitment.user_id == user_id))
-        assert (commitment.state, commitment.version) == ("complete", 2)
+        assert (commitment.state, commitment.version) == ("complete", 3)
 
 
 def test_concurrent_duplicate_ingress_is_conflict_safe(pg_sessions):
@@ -232,6 +225,92 @@ def test_concurrent_morning_triggers_create_one_logical_briefing(pg_sessions):
         assert "Power List" in proactive[0].content
 
 
+def test_simultaneous_morning_and_evening_share_one_ordered_conversation(pg_sessions):
+    with pg_sessions.begin() as db:
+        user = User(username="daily-race-owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        user_id = user.id
+
+    rendezvous = Barrier(2)
+
+    def handle(event_id: str, kind: str):
+        with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
+            return AgentRuntime().handle(db, user_id, RuntimeEvent(event_id, kind))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(handle, "simultaneous-morning", "morning_briefing"),
+            pool.submit(handle, "simultaneous-evening", "evening_reflection"),
+        ]
+        outcomes = [future.exception() or future.result() for future in futures]
+
+    assert all(isinstance(outcome, dict) for outcome in outcomes)
+    with pg_sessions() as db:
+        conversations = db.scalars(
+            select(ConversationSession).where(ConversationSession.user_id == user_id)
+        ).all()
+        messages = db.scalars(
+            select(Message).where(Message.user_id == user_id).order_by(Message.ordinal)
+        ).all()
+        assert len(conversations) == 1
+        assert {message.conversation_id for message in messages} == {conversations[0].id}
+        assert [message.ordinal for message in messages] == [1, 2]
+        assert {message.content for message in messages} >= {
+            "Good morning.",
+            "How did things go today?",
+        }
+        assert db.scalar(
+            select(func.count()).select_from(DailyBriefing).where(DailyBriefing.user_id == user_id)
+        ) == 1
+        assert db.scalar(
+            select(func.count())
+            .select_from(ReflectionPrompt)
+            .where(ReflectionPrompt.user_id == user_id)
+        ) == 1
+
+
+def test_simultaneous_user_messages_have_distinct_transactional_ordinals(pg_sessions):
+    user_id, conversation_id = seed_runtime(pg_sessions)
+    rendezvous = Barrier(8)
+
+    def handle(index: int):
+        with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
+            return AgentRuntime().handle(
+                db,
+                user_id,
+                RuntimeEvent(
+                    f"simultaneous-message-{index}",
+                    "user_message",
+                    f"message {index}",
+                    conversation_id,
+                ),
+            )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(handle, index) for index in range(8)]
+        outcomes = [future.exception() or future.result() for future in futures]
+
+    assert all(isinstance(outcome, dict) for outcome in outcomes)
+    with pg_sessions() as db:
+        assert db.scalar(
+            select(func.count())
+            .select_from(ConversationSession)
+            .where(ConversationSession.user_id == user_id)
+        ) == 1
+        messages = db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id, Message.user_id == user_id)
+            .order_by(Message.ordinal)
+        ).all()
+        assert [message.ordinal for message in messages] == list(range(1, 17))
+        for offset in range(0, len(messages), 2):
+            assert messages[offset].role == "user"
+            assert messages[offset + 1].role == "assistant"
+
+
 def test_idempotency_key_reuse_with_different_fingerprint_conflicts(pg_sessions):
     user_id, conversation_id = seed_runtime(pg_sessions)
     with pg_sessions() as db:
@@ -249,6 +328,38 @@ def test_idempotency_key_reuse_with_different_fingerprint_conflicts(pg_sessions)
         )
     with pg_sessions() as db, pytest.raises(IdempotencyConflict):
         AgentRuntime().handle(db, user_id, RuntimeEvent("reused", "dormancy_scan"))
+
+
+def test_idempotency_fingerprint_binds_normalized_conversation_target(pg_sessions):
+    user_id, conversation_id = seed_runtime(pg_sessions)
+    with pg_sessions.begin() as db:
+        other_user = User(username="other-conversation-owner")
+        db.add(other_user)
+        db.flush()
+        other_conversation = ConversationSession(user_id=other_user.id)
+        db.add(other_conversation)
+        db.flush()
+        other_conversation_id = other_conversation.id
+
+    event = RuntimeEvent("target-bound", "user_message", "Hello there!", conversation_id)
+    with pg_sessions() as db:
+        first = AgentRuntime().handle(db, user_id, event)
+    with pg_sessions() as db:
+        replay = AgentRuntime().handle(db, user_id, event)
+
+    assert first["idempotent"] is False
+    assert replay["idempotent"] is True
+    with pg_sessions() as db, pytest.raises(IdempotencyConflict):
+        AgentRuntime().handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "target-bound",
+                "user_message",
+                "Hello there!",
+                other_conversation_id,
+            ),
+        )
 
 
 @pytest.fixture()
@@ -279,6 +390,53 @@ def login(client):
 
 def csrf(client):
     return {"origin": "http://testserver", "x-csrf-token": client.cookies.get("csrf_token")}
+
+
+def test_concurrent_daily_and_chat_requests_never_return_server_errors(pg_client):
+    import app.main
+
+    assert login(pg_client).status_code == 200
+    headers = csrf(pg_client)
+    daily_rendezvous = Barrier(2)
+
+    def schedule(event_id: str, kind: str):
+        daily_rendezvous.wait(timeout=10)
+        return pg_client.post(
+            "/api/events/scheduled",
+            json={"event_id": event_id, "kind": kind},
+            headers=headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        daily_responses = [
+            future.result()
+            for future in [
+                pool.submit(schedule, "http-morning", "morning_briefing"),
+                pool.submit(schedule, "http-evening", "evening_reflection"),
+            ]
+        ]
+    assert [response.status_code for response in daily_responses] == [202, 202]
+
+    chat_rendezvous = Barrier(4)
+
+    def chat(index: int):
+        chat_rendezvous.wait(timeout=10)
+        return pg_client.post(
+            "/api/chat/messages",
+            json={"event_id": f"http-chat-{index}", "content": f"chat {index}"},
+            headers=headers,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        chat_responses = [future.result() for future in [pool.submit(chat, i) for i in range(4)]]
+    assert [response.status_code for response in chat_responses] == [201] * 4
+
+    with app.main.SessionLocal() as db:
+        conversations = db.scalars(select(ConversationSession)).all()
+        messages = db.scalars(select(Message).order_by(Message.ordinal)).all()
+        assert len(conversations) == 1
+        assert {message.conversation_id for message in messages} == {conversations[0].id}
+        assert [message.ordinal for message in messages] == list(range(1, 11))
 
 
 @pytest.mark.parametrize(
