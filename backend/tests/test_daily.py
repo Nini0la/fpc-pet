@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
@@ -139,6 +139,67 @@ def test_morning_event_persists_one_structured_briefing_in_the_same_chat():
         assert db.scalar(select(func.count()).select_from(ProvenanceLink)) >= 2
 
 
+def test_persisted_briefing_sections_are_stably_bounded_with_counts():
+    sessions = make_sessions()
+    now = datetime(2026, 9, 30, 8, tzinfo=timezone.utc)
+    clock = FakeClock(now)
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        db.add_all(
+            [
+                Commitment(
+                    user_id=user.id,
+                    title=f"commitment {index:03d}",
+                    confidence=1,
+                    derivation="test",
+                    created_at=now + timedelta(seconds=index),
+                )
+                for index in range(150)
+            ]
+            + [
+                Thread(
+                    user_id=user.id,
+                    title=f"thread {index:03d}",
+                    confidence=1,
+                    derivation="test",
+                    created_at=now + timedelta(seconds=index),
+                )
+                for index in range(150)
+            ]
+        )
+        user_id = user.id
+
+    with sessions() as db:
+        AgentRuntime(clock=clock).handle(
+            db, user_id, RuntimeEvent("bounded-morning", "morning_briefing")
+        )
+
+    with sessions() as db:
+        briefing = db.scalar(select(DailyBriefing))
+        assert [item["title"] for item in briefing.sections["open_commitments"]] == [
+            f"commitment {index:03d}" for index in range(50)
+        ]
+        assert [item["title"] for item in briefing.sections["active_threads"]] == [
+            f"thread {index:03d}" for index in range(50)
+        ]
+        assert briefing.sections["collection_meta"] == {
+            "open_commitments": {
+                "limit": 50,
+                "returned_count": 50,
+                "total_count": 150,
+                "has_more": True,
+            },
+            "active_threads": {
+                "limit": 50,
+                "returned_count": 50,
+                "total_count": 150,
+                "has_more": True,
+            },
+        }
+
+
 def test_evening_checkin_and_free_form_answer_close_the_loop_verbatim():
     sessions = make_sessions()
     clock = FakeClock(datetime(2026, 9, 30, 23, tzinfo=timezone.utc))
@@ -212,6 +273,180 @@ def test_evening_checkin_and_free_form_answer_close_the_loop_verbatim():
             item.source == f"message:{journal.source_message_id}"
             for item in reflection_episodes
         )
+
+
+def test_evening_clauses_complete_pronoun_subject_and_retain_contrasted_unfinished_work():
+    sessions = make_sessions()
+    clock = FakeClock(datetime(2026, 9, 30, 23, tzinfo=timezone.utc))
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        profiling = Commitment(
+            user_id=user.id, title="profiling", confidence=1, derivation="test"
+        )
+        portfolio = Commitment(
+            user_id=user.id, title="portfolio", confidence=1, derivation="test"
+        )
+        db.add_all([conversation, profiling, portfolio])
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+        profiling_id, portfolio_id = profiling.id, portfolio.id
+
+    runtime = AgentRuntime(clock=clock)
+    with sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("evening", "evening_reflection"))
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "answer",
+                "user_message",
+                "Profiling took forever. I finished it but didn’t touch the portfolio.",
+                conversation_id,
+            ),
+        )
+
+    with sessions() as db:
+        journal = db.scalar(select(JournalEntry))
+        assert journal.structured_state["completed_ids"] == [profiling_id]
+        assert journal.structured_state["unfinished_ids"] == [portfolio_id]
+        assert db.get(Commitment, profiling_id).state == "complete"
+        assert db.get(Commitment, portfolio_id).state == "open"
+
+
+def test_evening_completion_normalizes_action_prefix_and_article():
+    sessions = make_sessions()
+    clock = FakeClock(datetime(2026, 9, 30, 20, tzinfo=timezone.utc))
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+
+    runtime = AgentRuntime(clock=clock)
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "commitment",
+                "user_message",
+                "I need to finish the frontend",
+                conversation_id,
+            ),
+        )
+    with sessions() as db:
+        commitment_id = db.scalar(select(Commitment.id))
+    with sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("evening", "evening_reflection"))
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("answer", "user_message", "I finished the frontend.", conversation_id),
+        )
+
+    with sessions() as db:
+        journal = db.scalar(select(JournalEntry))
+        assert journal.structured_state["completed_ids"] == [commitment_id]
+        assert db.get(Commitment, commitment_id).state == "complete"
+
+
+def test_evening_ambiguous_pronoun_makes_no_structured_mutation():
+    sessions = make_sessions()
+    clock = FakeClock(datetime(2026, 9, 30, 20, tzinfo=timezone.utc))
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        first = Commitment(user_id=user.id, title="profiling", confidence=1, derivation="test")
+        second = Commitment(user_id=user.id, title="portfolio", confidence=1, derivation="test")
+        db.add_all([conversation, first, second])
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+
+    runtime = AgentRuntime(clock=clock)
+    with sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("evening", "evening_reflection"))
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "answer",
+                "user_message",
+                "Profiling and portfolio took forever. I finished it.",
+                conversation_id,
+            ),
+        )
+
+    with sessions() as db:
+        journal = db.scalar(select(JournalEntry))
+        assert journal.structured_state["completed_ids"] == []
+        assert all(item.state == "open" for item in db.scalars(select(Commitment)).all())
+
+
+def test_evening_answer_after_midnight_uses_outstanding_prompt_local_date():
+    sessions = make_sessions()
+    clock = FakeClock(datetime(2026, 9, 30, 23, 58, tzinfo=timezone.utc))
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+
+    runtime = AgentRuntime(clock=clock)
+    with sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("evening", "evening_reflection"))
+    clock.set(datetime(2026, 10, 1, 0, 3, tzinfo=timezone.utc))
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("after-midnight", "user_message", "A quiet day.", conversation_id),
+        )
+
+    with sessions() as db:
+        journal = db.scalar(select(JournalEntry))
+        assert journal.local_date == date(2026, 9, 30)
+
+
+def test_evening_answer_across_dst_uses_most_recent_outstanding_prompt_date():
+    sessions = make_sessions()
+    clock = FakeClock(datetime(2026, 3, 8, 4, 55, tzinfo=timezone.utc))
+    with sessions.begin() as db:
+        user = User(username="owner", timezone="America/New_York")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+
+    runtime = AgentRuntime(clock=clock)
+    with sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("dst-evening", "evening_reflection"))
+    clock.set(datetime(2026, 3, 8, 7, 5, tzinfo=timezone.utc))
+    with sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("dst-answer", "user_message", "Made progress.", conversation_id),
+        )
+
+    with sessions() as db:
+        journal = db.scalar(select(JournalEntry))
+        assert journal.local_date == date(2026, 3, 7)
 
 
 def test_next_morning_excludes_completed_and_boosts_yesterday_unfinished():

@@ -7,9 +7,9 @@ A narrow personal-AI prototype that carries explicit commitments, threads, share
 - Scheduled `morning_briefing` and `evening_reflection` events enter the same `AgentRuntime.handle` path as chat.
 - A deterministic, inspectable Power List ranks approximately three open commitments/threads using deadlines, explicit importance/user priority, inactivity, recent promises, and yesterday's explicitly unfinished work. Every selected item includes a reason.
 - Morning briefings and evening prompts are proactive assistant messages in the same persistent chat.
-- Evening answers are retained verbatim as tenant-owned journal entries. Only supported explicit completion, unfinished, priority, commitment/thread, blocker, and outcome language updates structured state; unsupported implications are not promoted.
-- `/api/today` returns the current briefing, Power List, open commitments, resurfaced work, and reflection state. `/api/history/journals` provides bounded, tenant-scoped journal browse/search.
-- `User.timezone`, an injected clock, and standard-library `zoneinfo` determine user-local dates. Database uniqueness makes repeated same-day triggers idempotent for policy `m2-v1`.
+- Evening answers are retained verbatim as tenant-owned journal entries. A clause-aware deterministic parser handles only explicit completion, unfinished, priority, commitment/thread, blocker, and outcome language; it resolves `it` only from one immediately preceding known subject and makes no mutation when the reference is ambiguous.
+- `/api/today` returns the current briefing, Power List, resurfaced work, reflection state, and at most 50 open commitments and 50 active threads in stable order. `collection_meta` reports each collection's limit, returned and total counts, and `has_more`. Persisted briefing collections are also capped at 50. `/api/history/journals` provides bounded, tenant-scoped journal browse/search.
+- `User.timezone`, an injected clock, and standard-library `zoneinfo` determine user-local dates. Scheduled daily events may carry `intended_local_date` for the current or immediately previous user-local day; other, future, and stale dates are rejected. Database uniqueness makes repeated triggers for the intended day idempotent for policy `m2-v1`.
 
 ## Run locally
 

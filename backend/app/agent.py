@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from sqlalchemy import func, select
@@ -24,6 +25,7 @@ class RuntimeEvent:
     kind: str
     content: str | None = None
     conversation_id: str | None = None
+    intended_local_date: date | None = None
 
 
 class IdempotencyConflict(Exception):
@@ -51,6 +53,9 @@ class AgentRuntime:
     def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
         relevant = {
             "content": event.content,
+            "intended_local_date": (
+                event.intended_local_date.isoformat() if event.intended_local_date else None
+            ),
             "kind": event.kind,
             "user_id": user_id,
         }
@@ -262,11 +267,19 @@ class AgentRuntime:
             )
         elif event.kind == "morning_briefing":
             logical_idempotent = not self.morning.run(
-                db, user_id, recorded.id, self.clock.now()
+                db,
+                user_id,
+                recorded.id,
+                self.clock.now(),
+                intended_local_date=event.intended_local_date,
             )
         elif event.kind == "evening_reflection":
             logical_idempotent = not self.evening.start(
-                db, user_id, recorded.id, self.clock.now()
+                db,
+                user_id,
+                recorded.id,
+                self.clock.now(),
+                intended_local_date=event.intended_local_date,
             )
         db.add(
             SkillRun(

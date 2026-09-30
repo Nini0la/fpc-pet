@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -758,3 +758,132 @@ def test_today_and_bounded_tenant_scoped_journal_history(client):
     login(client, username="bob")
     assert client.get("/api/today").json()["briefing"] is None
     assert client.get("/api/history/journals", params={"q": "review"}).json()["items"] == []
+
+
+def test_today_caps_150_open_commitments_and_active_threads_with_stable_metadata(client):
+    from sqlalchemy import select
+
+    import app.main
+    from app.models import Commitment, Thread, User
+
+    login(client)
+    now = datetime(2026, 9, 30, 8, tzinfo=timezone.utc)
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        db.add_all(
+            [
+                Commitment(
+                    user_id=user.id,
+                    title=f"commitment {index:03d}",
+                    confidence=1,
+                    derivation="test",
+                    created_at=now + timedelta(seconds=index),
+                )
+                for index in range(150)
+            ]
+            + [
+                Thread(
+                    user_id=user.id,
+                    title=f"thread {index:03d}",
+                    confidence=1,
+                    derivation="test",
+                    created_at=now + timedelta(seconds=index),
+                )
+                for index in range(150)
+            ]
+        )
+
+    payload = client.get("/api/today").json()
+    assert len(payload["open_commitments"]) == 50
+    assert len(payload["active_threads"]) == 50
+    assert [item["title"] for item in payload["open_commitments"]] == [
+        f"commitment {index:03d}" for index in range(50)
+    ]
+    assert [item["title"] for item in payload["active_threads"]] == [
+        f"thread {index:03d}" for index in range(50)
+    ]
+    assert payload["collection_meta"] == {
+        "open_commitments": {
+            "limit": 50,
+            "returned_count": 50,
+            "total_count": 150,
+            "has_more": True,
+        },
+        "active_threads": {
+            "limit": 50,
+            "returned_count": 50,
+            "total_count": 150,
+            "has_more": True,
+        },
+    }
+
+
+def test_missed_scheduled_trigger_uses_validated_intended_date_and_is_logically_idempotent(
+    client,
+):
+    from sqlalchemy import func, select
+
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+    from app.models import DailyBriefing
+
+    app.main.runtime = AgentRuntime(
+        clock=FakeClock(datetime(2026, 10, 1, 0, 30, tzinfo=timezone.utc))
+    )
+    login(client)
+    headers = csrf(client)
+    first = client.post(
+        "/api/events/scheduled",
+        json={
+            "event_id": "missed-morning-1",
+            "kind": "morning_briefing",
+            "intended_local_date": "2026-09-30",
+        },
+        headers=headers,
+    )
+    duplicate = client.post(
+        "/api/events/scheduled",
+        json={
+            "event_id": "missed-morning-2",
+            "kind": "morning_briefing",
+            "intended_local_date": "2026-09-30",
+        },
+        headers=headers,
+    )
+
+    assert first.status_code == 202
+    assert first.json()["idempotent"] is False
+    assert duplicate.status_code == 202
+    assert duplicate.json()["idempotent"] is True
+    with app.main.SessionLocal() as db:
+        briefing = db.scalar(select(DailyBriefing))
+        assert briefing.local_date.isoformat() == "2026-09-30"
+        assert db.scalar(select(func.count()).select_from(DailyBriefing)) == 1
+
+
+def test_scheduled_trigger_rejects_future_stale_and_non_daily_intended_dates(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    app.main.runtime = AgentRuntime(
+        clock=FakeClock(datetime(2026, 10, 1, 12, tzinfo=timezone.utc))
+    )
+    login(client)
+    headers = csrf(client)
+    for event_id, kind, intended_date in [
+        ("future", "morning_briefing", "2026-10-02"),
+        ("stale", "evening_reflection", "2026-09-29"),
+        ("foreign-kind", "dormancy_scan", "2026-10-01"),
+    ]:
+        response = client.post(
+            "/api/events/scheduled",
+            json={
+                "event_id": event_id,
+                "kind": kind,
+                "intended_local_date": intended_date,
+            },
+            headers=headers,
+        )
+        assert response.status_code == 422

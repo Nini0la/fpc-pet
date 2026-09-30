@@ -15,6 +15,9 @@ M2 was implemented in vertical RED → GREEN slices. Representative observed cyc
 | Today component | module resolution failed because `app/today.tsx` did not exist | briefing, Power List reasons, resurfacing, reflection state, and absent-section behavior passed |
 | Authenticated Today hydration | UI could not find the Today heading | authenticated page fetches and renders Today beside persistent chat |
 | Stable injected-clock chronology | shared-history recall selected the wrong same-timestamp message | persisted message ordinals restore deterministic same-chat order |
+| Clause-aware evening extraction | the exact profiling/portfolio contrast completed the wrong item, and `finish the frontend` did not match `finished the frontend` | explicit clause boundaries, negation/contrast, unique immediate `it`, and safe action/article normalization pass; ambiguity is inert |
+| Bounded Today/briefing state | 150 commitments and 150 threads were all returned and persisted | stable 50-item slices with totals and `has_more` pass for API and stored briefing sections |
+| Midnight and catch-up dates | post-midnight and DST answers found no prompt; missed triggers were assigned to execution day | 12-hour latest-awaiting prompt binding and validated intended-day catch-up/idempotency pass |
 
 Tests were written and observed failing before the corresponding runtime/UI behavior. Documentation followed the behavioral work.
 
@@ -23,15 +26,15 @@ Tests were written and observed failing before the corresponding runtime/UI beha
 - `JournalEntry`, `DailyBriefing`, and `ReflectionPrompt` persistence with ownership, provenance, policy/date uniqueness, source links, UTC timestamps, local date, structured state, and verbatim reflection retention.
 - Unified morning/evening events through `AgentRuntime.handle`, thin daily skills, proactive messages in the same chat, AgentEvents, SkillRuns, Episodes, and audit provenance.
 - Interpretable deterministic `m2-v1` Power List over current state; no empty vocabulary/discovery placeholders and no M3 slack overbuild.
-- Explicit evening extraction boundaries for completion, unfinished work, priority changes, new commitments/threads, blockers, and outcomes; unsupported prose is retained but not promoted.
+- Clause-aware evening extraction boundaries for completion, unfinished work, priority changes, new commitments/threads, blockers, and outcomes; unsupported or ambiguous prose is retained but not promoted.
 - Next-morning continuity: completed work stays out; explicitly unfinished open work resurfaces with a ranking boost.
-- Tenant-scoped bounded Today and journal-history APIs plus minimal Today rendering.
-- Injected clock, IANA timezones/`zoneinfo`, DST coverage, catch-up idempotency, and real PostgreSQL concurrent-trigger coverage.
+- Tenant-scoped bounded Today and journal-history APIs plus minimal Today rendering. Today and persisted briefing commitment/thread collections have a documented 50-item cap and explicit totals/`has_more` metadata.
+- Injected clock, IANA timezones/`zoneinfo`, midnight and DST prompt binding, validated one-day intended-date catch-up, catch-up idempotency, and real PostgreSQL concurrent-trigger coverage.
 - Explicit Alembic `0002` upgrade and downgrade; CI already runs the full PostgreSQL suite.
 
 ## Final verification
 
-- `POSTGRES_TEST_URL=… make check` passed: backend `82 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
+- `POSTGRES_TEST_URL=… make check` passed: backend `91 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
 - Focused real-PostgreSQL M2 quality suite: `14 passed`, including concurrent same-day morning triggers producing exactly one logical briefing/proactive message.
 - Real-PostgreSQL Alembic cycle succeeded: `upgrade head` (`0001` → `0002`), `downgrade 0001`, then `upgrade head` again.
 

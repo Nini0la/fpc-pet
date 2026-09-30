@@ -4,13 +4,13 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, or_, select
+from sqlalchemy import create_engine, func, or_, select
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
@@ -69,6 +69,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-CSRF-Token"],
 )
 runtime = AgentRuntime()
+TODAY_COLLECTION_LIMIT = 50
+SCHEDULE_CATCHUP_DAYS = 1
 
 
 def digest(value: str) -> str:
@@ -536,6 +538,13 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             DailyBriefing.policy_version == POLICY_VERSION,
         )
     )
+    open_total = db.scalar(
+        select(func.count()).select_from(Commitment).where(
+            Commitment.user_id == user.id,
+            Commitment.deleted.is_(False),
+            Commitment.state == "open",
+        )
+    ) or 0
     open_items = db.scalars(
         select(Commitment)
         .where(
@@ -544,6 +553,24 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             Commitment.state == "open",
         )
         .order_by(Commitment.created_at, Commitment.id)
+        .limit(TODAY_COLLECTION_LIMIT)
+    ).all()
+    active_total = db.scalar(
+        select(func.count()).select_from(Thread).where(
+            Thread.user_id == user.id,
+            Thread.deleted.is_(False),
+            Thread.state == "active",
+        )
+    ) or 0
+    active_threads = db.scalars(
+        select(Thread)
+        .where(
+            Thread.user_id == user.id,
+            Thread.deleted.is_(False),
+            Thread.state == "active",
+        )
+        .order_by(Thread.created_at, Thread.id)
+        .limit(TODAY_COLLECTION_LIMIT)
     ).all()
     prompt = db.scalar(
         select(ReflectionPrompt).where(
@@ -563,6 +590,21 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
         "briefing": item_dict(briefing) if briefing else None,
         "power_list": briefing.power_list if briefing else [],
         "open_commitments": [item_dict(item) for item in open_items],
+        "active_threads": [item_dict(item) for item in active_threads],
+        "collection_meta": {
+            "open_commitments": {
+                "limit": TODAY_COLLECTION_LIMIT,
+                "returned_count": len(open_items),
+                "total_count": open_total,
+                "has_more": open_total > len(open_items),
+            },
+            "active_threads": {
+                "limit": TODAY_COLLECTION_LIMIT,
+                "returned_count": len(active_threads),
+                "total_count": active_total,
+                "has_more": active_total > len(active_threads),
+            },
+        },
         "resurfaced_items": (briefing.sections.get("yesterday_unfinished", []) if briefing else []),
         "evening_reflection": {
             "status": reflection_status,
@@ -593,14 +635,31 @@ def journal_history(
 class ScheduledIn(BaseModel):
     event_id: str = Field(min_length=1, max_length=100)
     kind: str = Field(min_length=1, max_length=50)
+    intended_local_date: date | None = None
 
 
 @app.post("/api/events/scheduled", status_code=202, dependencies=[Depends(mutation_guard)])
 def scheduled(
     body: ScheduledIn, db: DBSession = Depends(db_session), user: User = Depends(current_user)
 ):
+    daily_kinds = {"morning_briefing", "evening_reflection"}
+    if body.intended_local_date is not None and body.kind not in daily_kinds:
+        raise HTTPException(422, "intended_local_date is only valid for daily events")
+    if body.kind in daily_kinds and body.intended_local_date is not None:
+        current_local_date = local_date_for(runtime.clock.now(), user.timezone)
+        earliest = current_local_date - timedelta(days=SCHEDULE_CATCHUP_DAYS)
+        if not earliest <= body.intended_local_date <= current_local_date:
+            raise HTTPException(422, "intended_local_date is outside the catch-up window")
     try:
-        return runtime.handle(db, user.id, RuntimeEvent(body.event_id, body.kind))
+        return runtime.handle(
+            db,
+            user.id,
+            RuntimeEvent(
+                body.event_id,
+                body.kind,
+                intended_local_date=body.intended_local_date,
+            ),
+        )
     except (IdempotencyConflict, ConcurrentMutation) as error:
         db.rollback()
         raise HTTPException(409, str(error)) from error

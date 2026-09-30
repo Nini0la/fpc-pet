@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 POLICY_VERSION = "m2-v1"
+BRIEFING_SECTION_LIMIT = 50
+REFLECTION_RESPONSE_WINDOW = timedelta(hours=12)
 
 
 def next_message_ordinal(db: Session, message_model: Any, conversation_id: str) -> int:
@@ -100,7 +102,14 @@ class MorningBriefingSkill:
 
     name = "morning-briefing"
 
-    def run(self, db: Session, user_id: str, event_id: str, now: datetime) -> bool:
+    def run(
+        self,
+        db: Session,
+        user_id: str,
+        event_id: str,
+        now: datetime,
+        intended_local_date: date | None = None,
+    ) -> bool:
         from .models import (
             Commitment,
             ConversationSession,
@@ -116,7 +125,7 @@ class MorningBriefingSkill:
         user = db.get(User, user_id)
         if user is None:
             raise ValueError("Unknown user")
-        local_date = local_date_for(now, user.timezone)
+        local_date = intended_local_date or local_date_for(now, user.timezone)
         existing = db.scalar(
             select(DailyBriefing).where(
                 DailyBriefing.user_id == user_id,
@@ -133,7 +142,7 @@ class MorningBriefingSkill:
                     Commitment.user_id == user_id,
                     Commitment.deleted.is_(False),
                     Commitment.state == "open",
-                )
+                ).order_by(Commitment.created_at, Commitment.id)
             )
         )
         threads = list(
@@ -142,7 +151,7 @@ class MorningBriefingSkill:
                     Thread.user_id == user_id,
                     Thread.deleted.is_(False),
                     Thread.state == "active",
-                )
+                ).order_by(Thread.created_at, Thread.id)
             )
         )
         candidates = [
@@ -173,22 +182,36 @@ class MorningBriefingSkill:
         power_list = [
             item.__dict__ for item in rank_power_list(candidates, now, unfinished_ids)
         ]
-        sections: dict[str, list[dict[str, str]]] = {}
+        sections: dict[str, Any] = {}
+        collection_meta: dict[str, dict[str, int | bool]] = {}
         if commitments:
             sections["open_commitments"] = [
                 {"id": item.id, "title": item.title, "deadline": item.deadline_hint or ""}
-                for item in commitments
+                for item in commitments[:BRIEFING_SECTION_LIMIT]
             ]
+            collection_meta["open_commitments"] = {
+                "limit": BRIEFING_SECTION_LIMIT,
+                "returned_count": len(sections["open_commitments"]),
+                "total_count": len(commitments),
+                "has_more": len(commitments) > BRIEFING_SECTION_LIMIT,
+            }
         if unfinished_ids:
             sections["yesterday_unfinished"] = [
                 {"id": item.id, "title": item.title}
                 for item in commitments
                 if item.id in unfinished_ids
-            ]
+            ][:BRIEFING_SECTION_LIMIT]
         if threads:
             sections["active_threads"] = [
-                {"id": item.id, "title": item.title} for item in threads
+                {"id": item.id, "title": item.title}
+                for item in threads[:BRIEFING_SECTION_LIMIT]
             ]
+            collection_meta["active_threads"] = {
+                "limit": BRIEFING_SECTION_LIMIT,
+                "returned_count": len(sections["active_threads"]),
+                "total_count": len(threads),
+                "has_more": len(threads) > BRIEFING_SECTION_LIMIT,
+            }
         recent = list(
             db.scalars(
                 select(Episode)
@@ -202,8 +225,11 @@ class MorningBriefingSkill:
         )
         if recent:
             sections["recent_activity"] = [
-                {"id": item.id, "summary": item.summary} for item in recent
+                {"id": item.id, "summary": item.summary}
+                for item in recent[-BRIEFING_SECTION_LIMIT:]
             ]
+        if collection_meta:
+            sections["collection_meta"] = collection_meta
 
         lines = ["Good morning."]
         if commitments:
@@ -213,7 +239,11 @@ class MorningBriefingSkill:
         if unfinished_ids:
             lines.append(
                 "Unfinished yesterday: "
-                + "; ".join(item.title for item in commitments if item.id in unfinished_ids)
+                + "; ".join(
+                    item.title
+                    for item in commitments[:BRIEFING_SECTION_LIMIT]
+                    if item.id in unfinished_ids
+                )
             )
         if threads:
             lines.append("Active threads: " + "; ".join(item.title for item in threads[:5]))
@@ -307,7 +337,14 @@ class EveningReflectionSkill:
     name = "evening-reflection"
     checkin = "How did things go today?"
 
-    def start(self, db: Session, user_id: str, event_id: str, now: datetime) -> bool:
+    def start(
+        self,
+        db: Session,
+        user_id: str,
+        event_id: str,
+        now: datetime,
+        intended_local_date: date | None = None,
+    ) -> bool:
         from .models import (
             ConversationSession,
             Episode,
@@ -320,7 +357,7 @@ class EveningReflectionSkill:
         user = db.get(User, user_id)
         if user is None:
             raise ValueError("Unknown user")
-        local_date = local_date_for(now, user.timezone)
+        local_date = intended_local_date or local_date_for(now, user.timezone)
         existing = db.scalar(
             select(ReflectionPrompt).where(
                 ReflectionPrompt.user_id == user_id,
@@ -402,10 +439,28 @@ class EveningReflectionSkill:
         return True
 
     @staticmethod
-    def _matching_item(items, phrase: str):
-        lower = phrase.casefold()
-        matches = [item for item in items if item.title.casefold() in lower]
-        return max(matches, key=lambda item: len(item.title), default=None)
+    def _normalized_subject(value: str) -> str:
+        value = value.casefold().replace("’", "'")
+        value = re.sub(r"[^\w\s'-]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"^(?:to\s+)?(?:finish|complete)\s+", "", value)
+        return re.sub(r"^(?:the|a|an)\s+", "", value).strip()
+
+    @classmethod
+    def _matching_item(cls, items, phrase: str):
+        subject = cls._normalized_subject(phrase)
+        matches = [item for item in items if cls._normalized_subject(item.title) == subject]
+        return matches[0] if len(matches) == 1 else None
+
+    @classmethod
+    def _mentioned_items(cls, items, clause: str):
+        normalized_clause = f" {cls._normalized_subject(clause)} "
+        matches = []
+        for item in items:
+            subject = cls._normalized_subject(item.title)
+            if subject and f" {subject} " in normalized_clause:
+                matches.append(item)
+        return matches
 
     def capture_if_pending(
         self,
@@ -430,19 +485,20 @@ class EveningReflectionSkill:
         user = db.get(User, user_id)
         if user is None:
             return False
-        local_date = local_date_for(now, user.timezone)
         prompt = db.scalar(
             select(ReflectionPrompt)
             .where(
                 ReflectionPrompt.user_id == user_id,
-                ReflectionPrompt.local_date == local_date,
                 ReflectionPrompt.policy_version == POLICY_VERSION,
                 ReflectionPrompt.status == "awaiting",
+                ReflectionPrompt.created_at >= now - REFLECTION_RESPONSE_WINDOW,
             )
+            .order_by(ReflectionPrompt.created_at.desc(), ReflectionPrompt.id.desc())
             .with_for_update()
         )
         if prompt is None:
             return False
+        local_date = prompt.local_date
         prior = db.scalar(
             select(JournalEntry).where(
                 JournalEntry.user_id == user_id, JournalEntry.local_date == local_date
@@ -475,30 +531,42 @@ class EveningReflectionSkill:
             "outcomes": [],
         }
         supported: list[str] = []
-        sentences = [
+        clauses = [
             item.strip(" \t\r\n.")
-            for item in re.split(r"(?<=[.!?])\s+|\n+", content)
+            for item in re.split(r"(?<=[.!?])\s+|\n+|\s+but\s+", content, flags=re.I)
             if item.strip()
         ]
-        for sentence in sentences:
-            lower = sentence.casefold().replace("’", "'")
+        prior_subject = None
+        for clause in clauses:
+            lower = clause.casefold().replace("’", "'")
+            mentioned = self._mentioned_items([*commitments, *threads], clause)
             unfinished = re.match(
-                r"^i\s+(?:didn't|did not|haven't|have not)\s+finish(?:ed)?\s+(.+)$", lower
+                r"^(?:i\s+)?(?:didn't|did not|haven't|have not)\s+"
+                r"(?:finish(?:ed)?|touch)\s+(.+)$",
+                lower,
             )
             if unfinished:
                 item = self._matching_item(commitments, unfinished.group(1))
                 if item is not None:
                     state["unfinished_ids"].append(item.id)
                     supported.append(f"unfinished: {item.title}")
+                prior_subject = mentioned[0] if len(mentioned) == 1 else None
                 continue
             completed = re.match(r"^i\s+(?:finished|completed)\s+(.+)$", lower)
             if completed:
-                item = self._matching_item(commitments, completed.group(1))
+                phrase = completed.group(1)
+                item = (
+                    prior_subject
+                    if self._normalized_subject(phrase) == "it"
+                    and prior_subject in commitments
+                    else self._matching_item(commitments, phrase)
+                )
                 if item is not None:
                     item.state = "complete"
                     item.version += 1
                     state["completed_ids"].append(item.id)
                     supported.append(f"completed: {item.title}")
+                prior_subject = mentioned[0] if len(mentioned) == 1 else None
                 continue
             priority_match = re.match(r"^(.+?)\s+is now (?:my )?(?:top )?priority$", lower)
             if priority_match:
@@ -508,8 +576,9 @@ class EveningReflectionSkill:
                     item.version += 1
                     state["priority_ids"].append(item.id)
                     supported.append(f"priority: {item.title}")
+                prior_subject = mentioned[0] if len(mentioned) == 1 else None
                 continue
-            commitment_match = re.match(r"^i need to (.+)$", sentence, re.I)
+            commitment_match = re.match(r"^i need to (.+)$", clause, re.I)
             if commitment_match:
                 title = commitment_match.group(1).strip()
                 deadline = None
@@ -530,8 +599,9 @@ class EveningReflectionSkill:
                 commitments.append(item)
                 state["new_commitment_ids"].append(item.id)
                 supported.append(f"new commitment: {title}")
+                prior_subject = item
                 continue
-            thread_match = re.match(r"^i(?:'m| am) considering (.+)$", sentence, re.I)
+            thread_match = re.match(r"^i(?:'m| am) considering (.+)$", clause, re.I)
             if thread_match:
                 title = thread_match.group(1).strip()
                 item = Thread(
@@ -546,16 +616,19 @@ class EveningReflectionSkill:
                 threads.append(item)
                 state["new_thread_ids"].append(item.id)
                 supported.append(f"new thread: {title}")
+                prior_subject = item
                 continue
-            blocker = re.match(r"^blocked (?:by|because of) (.+)$", sentence, re.I)
+            blocker = re.match(r"^blocked (?:by|because of) (.+)$", clause, re.I)
             if blocker:
                 state["blockers"].append(blocker.group(1).strip())
                 supported.append(f"blocker: {blocker.group(1).strip()}")
+                prior_subject = None
                 continue
-            outcome = re.match(r"^outcome:\s*(.+)$", sentence, re.I)
+            outcome = re.match(r"^outcome:\s*(.+)$", clause, re.I)
             if outcome:
                 state["outcomes"].append(outcome.group(1).strip())
                 supported.append(f"outcome: {outcome.group(1).strip()}")
+            prior_subject = mentioned[0] if len(mentioned) == 1 else None
 
         summary = "; ".join(supported) if supported else None
         journal = JournalEntry(
