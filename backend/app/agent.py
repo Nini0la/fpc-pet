@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .clock import Clock, SystemClock
 from .history import SharedHistoryRecallSkill
 from .models import AgentEvent, Commitment, Episode, Message, ProvenanceLink, SkillRun, Thread
 from .runtime import DeterministicModel, StateExtractor
@@ -22,10 +23,13 @@ class RuntimeEvent:
 class AgentRuntime:
     """The single entry point for reactive and scheduled events."""
 
-    def __init__(self, model: DeterministicModel | None = None) -> None:
+    def __init__(
+        self, model: DeterministicModel | None = None, clock: Clock | None = None
+    ) -> None:
         self.extractor = StateExtractor()
         self.model = model or DeterministicModel()
-        self.history = SharedHistoryRecallSkill()
+        self.clock = clock or SystemClock()
+        self.history = SharedHistoryRecallSkill(self.clock)
 
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
         prior = db.scalar(
@@ -58,6 +62,7 @@ class AgentRuntime:
                     confidence=0.9,
                     derivation="explicit-chat-episode-v1",
                     source=f"message:{user_message.id}",
+                    created_at=self.clock.now(),
                 )
                 db.add(episode)
                 db.flush()
@@ -81,6 +86,7 @@ class AgentRuntime:
                     effort_minutes=proposal.effort_minutes,
                     confidence=proposal.confidence,
                     derivation=proposal.derivation,
+                    created_at=self.clock.now(),
                 )
             elif proposal.kind == "thread":
                 target = Thread(
@@ -88,6 +94,7 @@ class AgentRuntime:
                     title=proposal.title or "",
                     confidence=proposal.confidence,
                     derivation=proposal.derivation,
+                    created_at=self.clock.now(),
                 )
             if target is not None:
                 db.add(target)
@@ -144,7 +151,7 @@ class AgentRuntime:
                         )
                     )
             if recalling_history:
-                reply = self.history.answer(db, user_id)
+                reply = self.history.answer(db, user_id, event.content)
             elif proposal.kind == "clarification":
                 reply = "What should I remind you about?"
             else:

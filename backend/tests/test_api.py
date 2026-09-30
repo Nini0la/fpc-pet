@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -188,7 +189,7 @@ def test_chat_builds_explicit_actor_attributed_episode_history_across_sessions(c
 
 @pytest.mark.parametrize(
     "question",
-    ["What have we been doing?", "What have you helped me with?", "What have we tried?"],
+    ["What have we been doing?"],
 )
 def test_chat_recall_is_chronological_sourced_and_uncertainty_aware(client, question):
     login(client)
@@ -225,6 +226,156 @@ def test_chat_recall_is_chronological_sourced_and_uncertainty_aware(client, ques
         line = next(line for line in answer.splitlines() if summary in line)
         assert f"[{actor}; source message:" in line
         assert "confidence " in line
+
+
+def test_all_spec_recall_phrases_filter_history_without_contaminating_it(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    clock = FakeClock(datetime(2026, 9, 20, 9, tzinfo=timezone.utc))
+    app.main.runtime = AgentRuntime(clock=clock)
+    login(client)
+    h = csrf(client)
+    facts = [
+        (
+            "old-help",
+            "You helped me archive old files.",
+            datetime(2026, 9, 20, 9, tzinfo=timezone.utc),
+        ),
+        (
+            "nebius-talk",
+            "We only discussed Nebius project options.",
+            datetime(2026, 9, 28, 9, tzinfo=timezone.utc),
+        ),
+        (
+            "nebius-decision",
+            "We decided the Nebius project should use a separate demonstrator.",
+            datetime(2026, 9, 28, 10, tzinfo=timezone.utc),
+        ),
+        (
+            "jev-start",
+            "We started talking about Jev and possible collaborators.",
+            datetime(2026, 9, 29, 9, tzinfo=timezone.utc),
+        ),
+        ("jev-later", "We discussed Jev again.", datetime(2026, 9, 30, 8, tzinfo=timezone.utc)),
+        (
+            "ip-talk",
+            "We only discussed the IP issue.",
+            datetime(2026, 9, 30, 9, tzinfo=timezone.utc),
+        ),
+        (
+            "ip-conclusion",
+            "We concluded the IP issue requires keeping FPC private.",
+            datetime(2026, 9, 30, 10, tzinfo=timezone.utc),
+        ),
+        (
+            "assistant-prior",
+            "You told me about the launch checklist.",
+            datetime(2026, 9, 30, 11, tzinfo=timezone.utc),
+        ),
+        (
+            "user-tried",
+            "I tested the deployment workflow.",
+            datetime(2026, 9, 30, 12, tzinfo=timezone.utc),
+        ),
+    ]
+    for event_id, content, when in facts:
+        clock.set(when)
+        assert (
+            client.post(
+                "/api/chat/messages",
+                json={"content": content, "event_id": event_id},
+                headers=h,
+            ).status_code
+            == 201
+        )
+
+    clock.set(datetime(2026, 9, 30, 15, tzinfo=timezone.utc))
+    cases = [
+        (
+            "What have we been doing?",
+            [content for _, content, _ in facts],
+            [],
+        ),
+        (
+            "What did we decide about the Nebius project?",
+            ["We decided the Nebius project should use a separate demonstrator."],
+            ["We only discussed Nebius project options.", "IP issue"],
+        ),
+        (
+            "What have you helped me with this week?",
+            ["You told me about the launch checklist."],
+            ["You helped me archive old files.", "Nebius project"],
+        ),
+        (
+            "When did we start talking about Jev?",
+            ["We started talking about Jev and possible collaborators."],
+            ["We discussed Jev again."],
+        ),
+        (
+            "What did we conclude about the IP issue?",
+            ["We concluded the IP issue requires keeping FPC private."],
+            ["We only discussed the IP issue.", "Nebius project"],
+        ),
+        (
+            "What did you already tell me about this?",
+            ["You helped me archive old files.", "You told me about the launch checklist."],
+            ["Nebius project", "deployment workflow"],
+        ),
+        (
+            "What have we tried?",
+            ["We decided the Nebius project", "I tested the deployment workflow."],
+            ["We only discussed Nebius project options.", "We only discussed the IP issue."],
+        ),
+    ]
+    for index, (question, included, excluded) in enumerate(cases):
+        response = client.post(
+            "/api/chat/messages",
+            json={"content": question, "event_id": f"spec-recall-{index}"},
+            headers=h,
+        )
+        assert response.status_code == 201
+        answer = client.get("/api/chat/messages").json()[-1]["content"]
+        assert "source" in answer
+        assert all(text in answer for text in included)
+        assert all(text not in answer for text in excluded)
+
+    recalled = client.get(
+        "/api/history/recall",
+        params={"q": "archive Nebius Jev issue checklist deployment"},
+    ).json()
+    assert len(recalled) == len(facts)
+    assert not any(item["summary"].startswith("What ") for item in recalled)
+
+
+def test_chat_recall_includes_explicit_non_deleted_state_with_message_sources(client):
+    login(client)
+    h = csrf(client)
+    for event_id, content in [
+        ("state-commitment", "I need to finish the Nebius brief"),
+        ("state-thread", "hang onto this idea: Jev interview series"),
+    ]:
+        assert (
+            client.post(
+                "/api/chat/messages",
+                json={"content": content, "event_id": event_id},
+                headers=h,
+            ).status_code
+            == 201
+        )
+
+    thread = client.get("/api/threads").json()[0]
+    assert client.delete(f"/api/threads/{thread['id']}", headers=h).status_code == 204
+    client.post(
+        "/api/chat/messages",
+        json={"content": "What have we been doing?", "event_id": "state-recall"},
+        headers=h,
+    )
+    answer = client.get("/api/chat/messages").json()[-1]["content"]
+    assert "finish the Nebius brief" in answer
+    assert "source message:" in answer
+    assert "Jev interview series" not in answer
 
 
 def test_chat_recall_uses_corrected_history_and_excludes_deleted_history(client):

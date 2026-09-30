@@ -15,6 +15,8 @@
 | Imperative deadline extraction | focused extractor test → `none != commitment` | focused extractor test → `1 passed` |
 | Server-derived production identity | focused security test → `No module named app.security` | focused security test → `1 passed`; client username forced to `owner` |
 | Chat-created shared history and conversational recall | focused E2E tests → `5 failed` (zero Episodes; canned reply) | focused E2E tests → `5 passed`; actor-attributed Episodes and sourced recall across auth sessions |
+| Recall intent facets and history contamination | focused seven-phrase E2E test → failed at missing injected clock (`unexpected keyword argument 'clock'`) | focused E2E tests → `2 passed`; all seven spec questions filter by topic, actor, decision, chronology, and week while recall turns create no Episodes |
+| Explicit state in shared-history recall | focused E2E test → commitment absent from recall despite its message provenance | focused E2E test → `1 passed`; non-deleted commitments/threads join chronology with message sources while deleted state stays excluded |
 
 Tests were added before their corresponding runtime behavior. Configuration and documentation were added after behavioral slices. The persistence regression opens a fresh SQLAlchemy session against the same durable database after the request transaction.
 
@@ -22,7 +24,7 @@ Dependency security was checked after upgrading Next/React/Vitest and the lint s
 
 ## Delivered
 
-Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic explicit state extraction and transitions, idempotent unified runtime, chat-created explicit attributed history, conversational shared-history recall, provenance, correction/deletion, M1 schema/migration, minimal login/chat UI, compose/Make/CI, and security/architecture docs.
+Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic explicit state extraction and transitions, idempotent unified runtime, chat-created explicit attributed history, facet-filtered conversational shared-history recall, recall-contamination prevention, provenance, correction/deletion, M1 schema/migration, minimal login/chat UI, compose/Make/CI, and security/architecture docs.
 
 ## Final verification
 
@@ -30,4 +32,4 @@ Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic expl
 
 ## Known limits
 
-This is M1 only. General deterministic response text is a test/development stub. Deadline strings are not normalized dates; extraction and shared-history intent detection handle only documented explicit phrases. The history API is lexical, while conversational shared-history recall reads the complete explicit Episode chronology. Scheduled events enter the runtime but M2 proactive policies are absent. Tests use SQLite while production is PostgreSQL.
+This is M1 only. General deterministic response text is a test/development stub. Deadline strings are not normalized dates. Shared-history intent parsing is a small deterministic grammar for the documented recall facets rather than open-ended language understanding; conversational recall uses explicit, non-deleted Episode and state evidence with message provenance. The history API remains lexical. Scheduled events enter the runtime but M2 proactive policies are absent. Tests use SQLite while production is PostgreSQL.
