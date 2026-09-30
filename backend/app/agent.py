@@ -84,10 +84,21 @@ class AgentRuntime:
         return "v2:" + base64.urlsafe_b64encode(digest).decode().rstrip("=")
 
     @staticmethod
-    def _legacy_fingerprint(user_id: str, event: RuntimeEvent) -> str:
-        return hashlib.sha256(
+    def _legacy_fingerprints(user_id: str, event: RuntimeEvent) -> tuple[str, ...]:
+        later_digest = hashlib.sha256(
             AgentRuntime._canonical_request(user_id, event, include_target=False)
         ).hexdigest()
+        if event.intended_local_date is not None:
+            return (later_digest,)
+        original_request = {
+            "content": event.content,
+            "kind": event.kind,
+            "user_id": user_id,
+        }
+        original_canonical = json.dumps(
+            original_request, sort_keys=True, separators=(",", ":")
+        ).encode()
+        return (later_digest, hashlib.sha256(original_canonical).hexdigest())
 
     @staticmethod
     def _idempotent_result(
@@ -99,8 +110,17 @@ class AgentRuntime:
     ) -> dict[str, Any]:
         if hmac.compare_digest(prior.request_fingerprint, fingerprint):
             return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
-        legacy_matches = prior.kind == event.kind and hmac.compare_digest(
-            prior.request_fingerprint, AgentRuntime._legacy_fingerprint(user_id, event)
+        legacy_fingerprint = prior.request_fingerprint
+        is_unversioned_sha256 = len(legacy_fingerprint) == 64 and all(
+            character in "0123456789abcdef" for character in legacy_fingerprint
+        )
+        legacy_matches = (
+            is_unversioned_sha256
+            and prior.kind == event.kind
+            and any(
+                hmac.compare_digest(legacy_fingerprint, candidate)
+                for candidate in AgentRuntime._legacy_fingerprints(user_id, event)
+            )
         )
         if event.kind == "user_message":
             legacy_matches = legacy_matches and event.conversation_id is not None and db.scalar(

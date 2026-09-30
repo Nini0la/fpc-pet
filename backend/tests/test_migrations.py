@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -190,7 +191,19 @@ def test_conversation_invariant_migration_cycle_on_real_postgres():
     assert run_alembic(database_url, "upgrade", "head").returncode == 0
 
 
-def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(monkeypatch):
+@pytest.mark.parametrize(
+    "legacy_fields",
+    [
+        pytest.param(("content", "kind", "user_id"), id="original-three-field"),
+        pytest.param(
+            ("content", "intended_local_date", "kind", "user_id"),
+            id="later-four-field",
+        ),
+    ],
+)
+def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(
+    monkeypatch, legacy_fields: tuple[str, ...]
+):
     database_url = os.getenv("POSTGRES_TEST_URL")
     if not database_url:
         pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
@@ -207,8 +220,11 @@ def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(monkey
         "kind": "user_message",
         "user_id": "legacy-user",
     }
+    canonical_legacy_request = {field: legacy_request[field] for field in legacy_fields}
     legacy_fingerprint = hashlib.sha256(
-        json.dumps(legacy_request, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(
+            canonical_legacy_request, sort_keys=True, separators=(",", ":")
+        ).encode()
     ).hexdigest()
     engine = create_engine(database_url)
     with engine.begin() as connection:
@@ -280,6 +296,13 @@ def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(monkey
             "user_message",
             "Hello from before 0003",
             "other-conversation",
+        ),
+        RuntimeEvent(
+            "legacy-http-event",
+            "user_message",
+            "Hello from before 0003",
+            "legacy-conversation",
+            date(2026, 10, 1),
         ),
     ]
     for mismatch in legacy_mismatches:
