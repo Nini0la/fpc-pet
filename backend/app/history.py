@@ -134,6 +134,12 @@ class SharedHistoryRecallSkill:
         )
         return entropy >= 4.5
 
+    def allows_episodic_content(self, text: str) -> bool:
+        lower = text.lower()
+        return not self._contains_credential_like_value(text) and not re.search(
+            r"\b(?:password|passcode|api[ _-]?key|secret|token)\b", lower
+        )
+
     def actor_for(self, text: str) -> str | None:
         lower = " ".join(text.lower().split())
         # Episodic capture is default-deny. State-setting utterances have their
@@ -141,9 +147,7 @@ class SharedHistoryRecallSkill:
         # chat must not silently become shared-history claims.
         if lower.startswith(("hang onto this idea", "i need to ")) or lower.endswith("?"):
             return None
-        if self._contains_credential_like_value(text) or re.search(
-            r"\b(?:password|passcode|api[ _-]?key|secret|token)\b", lower
-        ):
+        if not self.allows_episodic_content(text):
             return None
         discussed_markers = (
             "we only discussed ",
@@ -284,7 +288,7 @@ class SharedHistoryRecallSkill:
                 Message.role == "user",
                 Message.id != current_message_id,
             )
-            .order_by(Message.created_at.desc())
+            .order_by(Message.ordinal.desc(), Message.created_at.desc())
             .limit(1)
         )
         if previous is None:

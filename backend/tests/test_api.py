@@ -709,3 +709,52 @@ def test_scheduled_and_user_events_share_runtime(client):
     )
     assert r.status_code == 202
     assert r.json()["handled_by"] == "AgentRuntime.handle"
+
+
+def test_today_and_bounded_tenant_scoped_journal_history(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    clock = FakeClock(datetime(2026, 9, 30, 8, tzinfo=timezone.utc))
+    app.main.runtime = AgentRuntime(clock=clock)
+    login(client, username="alice")
+    h = csrf(client)
+    client.post(
+        "/api/chat/messages",
+        json={"content": "I need to submit demo before Friday", "event_id": "commit"},
+        headers=h,
+    )
+    assert client.post(
+        "/api/events/scheduled",
+        json={"event_id": "morning", "kind": "morning_briefing"},
+        headers=h,
+    ).status_code == 202
+    today = client.get("/api/today").json()
+    assert today["briefing"]["local_date"] == "2026-09-30"
+    assert today["power_list"][0]["title"] == "submit demo"
+    assert today["open_commitments"][0]["title"] == "submit demo"
+    assert today["evening_reflection"]["status"] == "not_started"
+
+    clock.set(datetime(2026, 9, 30, 20, tzinfo=timezone.utc))
+    client.post(
+        "/api/events/scheduled",
+        json={"event_id": "evening", "kind": "evening_reflection"},
+        headers=h,
+    )
+    reflection = "I didn't finish submit demo. Blocked by review."
+    client.post(
+        "/api/chat/messages",
+        json={"content": reflection, "event_id": "reflection"},
+        headers=h,
+    )
+    history = client.get("/api/history/journals", params={"q": "REVIEW", "limit": 10}).json()
+    assert history["items"][0]["original_content"] == reflection
+    assert history["has_more"] is False
+    assert client.get("/api/history/journals", params={"q": "x" * 501}).status_code == 422
+    assert client.get("/api/history/journals", params={"limit": 101}).status_code == 422
+
+    client.post("/api/auth/logout", headers=h)
+    login(client, username="bob")
+    assert client.get("/api/today").json()["briefing"] is None
+    assert client.get("/api/history/journals", params={"q": "review"}).json()["items"] == []

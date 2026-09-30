@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from threading import Barrier
 
 import pytest
@@ -16,6 +17,7 @@ from app.models import (
     Base,
     Commitment,
     ConversationSession,
+    DailyBriefing,
     Episode,
     Message,
     ProvenanceLink,
@@ -202,6 +204,32 @@ def test_concurrent_duplicate_ingress_is_conflict_safe(pg_sessions):
     with pg_sessions() as db:
         assert db.scalar(select(func.count()).select_from(AgentEvent)) == 1
         assert db.scalar(select(func.count()).select_from(Message)) == 2
+
+
+def test_concurrent_morning_triggers_create_one_logical_briefing(pg_sessions):
+    from app.clock import FakeClock
+
+    user_id, _ = seed_runtime(pg_sessions)
+    rendezvous = Barrier(2)
+    clock = FakeClock(datetime(2026, 9, 30, 8, tzinfo=timezone.utc))
+
+    def handle(event_id: str):
+        with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
+            return AgentRuntime(clock=clock).handle(
+                db, user_id, RuntimeEvent(event_id, "morning_briefing")
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(handle, "am-1"), pool.submit(handle, "am-2")]
+        results = [future.result() for future in futures]
+
+    assert sorted(result["idempotent"] for result in results) == [False, True]
+    with pg_sessions() as db:
+        assert db.scalar(select(func.count()).select_from(DailyBriefing)) == 1
+        proactive = db.scalars(select(Message).where(Message.role == "assistant")).all()
+        assert len(proactive) == 1
+        assert "Power List" in proactive[0].content
 
 
 def test_idempotency_key_reuse_with_different_fingerprint_conflicts(pg_sessions):

@@ -6,15 +6,16 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .clock import Clock, SystemClock
+from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .history import SharedHistoryRecallSkill
 from .models import AgentEvent, Commitment, Episode, Message, ProvenanceLink, SkillRun, Thread
 from .persistence import MutationResult, atomic_update
-from .runtime import DeterministicModel, StateExtractor
+from .runtime import DeterministicModel, StateExtractor, StateProposal
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class AgentRuntime:
         self.model = model or DeterministicModel()
         self.clock = clock or SystemClock()
         self.history = SharedHistoryRecallSkill(self.clock)
+        self.morning = MorningBriefingSkill()
+        self.evening = EveningReflectionSkill()
 
     @staticmethod
     def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
@@ -60,6 +63,13 @@ class AgentRuntime:
             raise IdempotencyConflict("Idempotency key already used for different input")
         return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
 
+    @staticmethod
+    def _next_message_ordinal(db: Session, conversation_id: str) -> int:
+        current = db.scalar(
+            select(func.max(Message.ordinal)).where(Message.conversation_id == conversation_id)
+        )
+        return (current or 0) + 1
+
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
         fingerprint = self._fingerprint(user_id, event)
         prior = db.scalar(
@@ -74,6 +84,7 @@ class AgentRuntime:
             external_id=event.external_id,
             kind=event.kind,
             request_fingerprint=fingerprint,
+            created_at=self.clock.now(),
         )
         try:
             with db.begin_nested():
@@ -90,6 +101,8 @@ class AgentRuntime:
             if prior is None:
                 raise
             return self._idempotent_result(prior, fingerprint)
+        logical_idempotent = False
+        reflection_handled = False
         if event.kind == "user_message" and event.content and event.conversation_id:
             user_message = Message(
                 user_id=user_id,
@@ -97,9 +110,20 @@ class AgentRuntime:
                 role="user",
                 actor="user",
                 content=event.content,
+                ordinal=self._next_message_ordinal(db, event.conversation_id),
+                created_at=self.clock.now(),
             )
             db.add(user_message)
             db.flush()
+            reflection_handled = self.evening.capture_if_pending(
+                db,
+                user_id,
+                recorded.id,
+                user_message.id,
+                event.content,
+                self.clock.now(),
+                self.history.allows_episodic_content(event.content),
+            )
             recalling_history = self.history.matches(event.content)
             episode_actor = self.history.actor_for(event.content)
             if not recalling_history and episode_actor is not None:
@@ -124,7 +148,11 @@ class AgentRuntime:
                         derivation=episode.derivation,
                     )
                 )
-            proposal = self.extractor.extract(event.content)
+            proposal = (
+                StateProposal("none")
+                if reflection_handled
+                else self.extractor.extract(event.content)
+            )
             target: Commitment | Thread | None = None
             if proposal.kind == "commitment":
                 target = Commitment(
@@ -207,7 +235,9 @@ class AgentRuntime:
                             derivation="explicit-state-transition-v1",
                         )
                     )
-            if recalling_history:
+            if reflection_handled:
+                reply = "Thanks — I’ve carried that into tomorrow."
+            elif recalling_history:
                 reply = self.history.answer(
                     db,
                     user_id,
@@ -226,14 +256,28 @@ class AgentRuntime:
                     role="assistant",
                     actor="assistant",
                     content=reply,
+                    ordinal=self._next_message_ordinal(db, event.conversation_id),
+                    created_at=self.clock.now(),
                 )
+            )
+        elif event.kind == "morning_briefing":
+            logical_idempotent = not self.morning.run(
+                db, user_id, recorded.id, self.clock.now()
+            )
+        elif event.kind == "evening_reflection":
+            logical_idempotent = not self.evening.start(
+                db, user_id, recorded.id, self.clock.now()
             )
         db.add(
             SkillRun(
                 user_id=user_id,
                 event_id=recorded.id,
                 skill_name=(
-                    "shared-history-recall"
+                    self.evening.name
+                    if event.kind == "evening_reflection" or reflection_handled
+                    else self.morning.name
+                    if event.kind == "morning_briefing"
+                    else "shared-history-recall"
                     if event.kind == "user_message"
                     and event.content
                     and self.history.matches(event.content)
@@ -241,8 +285,9 @@ class AgentRuntime:
                     if event.kind == "user_message"
                     else "scheduled-event"
                 ),
-                outcome="handled",
+                outcome="duplicate" if logical_idempotent else "handled",
+                created_at=self.clock.now(),
             )
         )
         db.commit()
-        return {"idempotent": False, "handled_by": "AgentRuntime.handle"}
+        return {"idempotent": logical_idempotent, "handled_by": "AgentRuntime.handle"}

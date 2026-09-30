@@ -2,6 +2,7 @@
 
 import {FormEvent,useEffect,useState} from "react";
 import Chat,{type Message} from "./chat";
+import Today,{type TodayData} from "./today";
 
 const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:8000";
 
@@ -10,15 +11,22 @@ async function fetchMessages():Promise<Message[]>{
   if(!response.ok) throw new Error("Not authenticated");
   return response.json();
 }
+async function fetchToday():Promise<TodayData>{
+  const response=await fetch(`${API}/api/today`,{credentials:"include"});
+  if(!response.ok) throw new Error("Unable to load Today");
+  return response.json();
+}
 
 export default function Page(){
   const [ready,setReady]=useState(false);
   const [messages,setMessages]=useState<Message[]>([]);
+  const [today,setToday]=useState<TodayData|null>(null);
   const [code,setCode]=useState("");
 
   useEffect(()=>{
-    fetchMessages().then(history=>{
+    fetchMessages().then(async history=>{
       setMessages(history);
+      setToday(await fetchToday());
       setReady(true);
     }).catch(()=>undefined);
   },[]);
@@ -34,10 +42,11 @@ export default function Page(){
     if(response.ok){
       const history=await fetchMessages();
       setMessages(history);
+      setToday(await fetchToday());
       setReady(true);
     }
   }
 
-  if(ready) return <Chat initialMessages={messages}/>;
+  if(ready) return <><Today data={today!}/><Chat initialMessages={messages}/></>;
   return <main><h1>Continuity</h1><form onSubmit={login}><label htmlFor="code">Access code</label><input id="code" type="password" value={code} onChange={e=>setCode(e.target.value)}/><button>Sign in</button></form></main>;
 }

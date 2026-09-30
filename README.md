@@ -1,6 +1,15 @@
-# Continuity — Milestone 1
+# Continuity — Milestone 2
 
-A narrow personal-AI prototype that carries explicit commitments, threads, and shared episodes forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
+A narrow personal-AI prototype that carries explicit commitments, threads, shared episodes, and a daily morning/evening loop forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
+
+## What M2 adds
+
+- Scheduled `morning_briefing` and `evening_reflection` events enter the same `AgentRuntime.handle` path as chat.
+- A deterministic, inspectable Power List ranks approximately three open commitments/threads using deadlines, explicit importance/user priority, inactivity, recent promises, and yesterday's explicitly unfinished work. Every selected item includes a reason.
+- Morning briefings and evening prompts are proactive assistant messages in the same persistent chat.
+- Evening answers are retained verbatim as tenant-owned journal entries. Only supported explicit completion, unfinished, priority, commitment/thread, blocker, and outcome language updates structured state; unsupported implications are not promoted.
+- `/api/today` returns the current briefing, Power List, open commitments, resurfaced work, and reflection state. `/api/history/journals` provides bounded, tenant-scoped journal browse/search.
+- `User.timezone`, an injected clock, and standard-library `zoneinfo` determine user-local dates. Database uniqueness makes repeated same-day triggers idempotent for policy `m2-v1`.
 
 ## Run locally
 
@@ -9,12 +18,12 @@ A narrow personal-AI prototype that carries explicit commitments, threads, and s
 3. `cd backend && uv sync --extra dev && set -a && source ../.env && set +a && uv run alembic upgrade head && uv run uvicorn app.main:app --reload`
 4. `cd frontend && npm ci && npm run dev`
 
-Alembic uses `DATABASE_URL` when it is set (converting supported async URL forms to synchronous migration drivers). If it is unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development fallback. Migration URLs are never logged by the Alembic configuration.
+Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through M2. If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development fallback. Migration URLs are never logged.
 
-Production fails closed unless the database URL, access code, a 32+ character session secret, and exact CORS origins are present. Set `APP_ENV=production`; cookies are Secure in production. The deterministic adapter (`MODEL_MODE=deterministic`) is only a development/test response stub and is rejected in production. It is not an LLM and no live Nebius/Nemotron use is claimed. `ModelRouter` is the future provider boundary; M1 intentionally ships no production provider adapter, so run this milestone in development/test mode until one is added.
+Production fails closed unless the database URL, access code, a 32+ character session secret, and exact CORS origins are present. Set `APP_ENV=production`; cookies are Secure in production. The deterministic adapter (`MODEL_MODE=deterministic`) is only a development/test response stub and is rejected in production. No live Nebius/Nemotron use is claimed yet.
 
 ## Verify
 
-`make check` runs backend tests/lint/types and frontend tests/lint/types/build.
+`make check` runs backend tests/lint/types and frontend tests/audit/lint/types/build. The PostgreSQL suite is enabled by setting `POSTGRES_TEST_URL`; CI runs it against PostgreSQL 16.
 
 See `docs/ARCHITECTURE.md`, `docs/SECURITY_PRIVACY.md`, and `docs/IMPLEMENTATION_STATUS.md`.

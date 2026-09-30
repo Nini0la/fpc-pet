@@ -1,41 +1,40 @@
-# Implementation status — Milestone 1
+# Implementation status — Milestone 2
 
-## TDD evidence (actual runs)
+## TDD evidence
+
+M2 was implemented in vertical RED → GREEN slices. Representative observed cycles:
 
 | Slice | RED | GREEN |
 |---|---|---|
-| State extraction boundaries | `uv run pytest tests/test_extraction.py -q` → import failed: `No module named app` | same command → `5 passed` |
-| Auth/chat/tenancy/provenance/idempotency/recall | `uv run pytest tests/test_api.py -q` → `No module named app.main` (7 errors) | same command → `7 passed` |
-| Lifecycle transitions | focused test → expected `open != complete` failure | focused test → `1 passed` |
-| Commitment/episode correction and deletion | focused test → expected route `404` | focused test → `1 passed` |
-| Escaped chat rendering and bounded input affordance | `npm test` → XSS rendering passed; capacity assertion failed (`Unable to find ... 0 / 4000`) | `npm test` → `2 passed` |
-| Controllable time | focused clock test → `No module named app.clock` | focused clock test → `1 passed` |
-| Production model safety | focused config test → production imported with deterministic mode | focused config test → `1 passed`, deterministic production rejected |
-| Pronoun completion / abandonment | focused API test → recent commitment remained `open` | focused API test → `1 passed` |
-| Imperative deadline extraction | focused extractor test → `none != commitment` | focused extractor test → `1 passed` |
-| Server-derived production identity | focused security test → `No module named app.security` | focused security test → `1 passed`; client username forced to `owner` |
-| Chat-created shared history and conversational recall | focused E2E tests → `5 failed` (zero Episodes; canned reply) | focused E2E tests → `5 passed`; actor-attributed Episodes and sourced recall across auth sessions |
-| Recall intent facets and history contamination | focused seven-phrase E2E test → failed at missing injected clock (`unexpected keyword argument 'clock'`) | focused E2E tests → `2 passed`; all seven spec questions filter by topic, actor, decision, chronology, and week while recall turns create no Episodes |
-| Explicit state in shared-history recall | focused E2E test → commitment absent from recall despite its message provenance | focused E2E test → `1 passed`; non-deleted commitments/threads join chronology with message sources while deleted state stays excluded |
-| Negated completion boundaries | focused extractor/API tests → `8 failed, 4 passed`; “haven’t/not finished” incorrectly completed the open commitment | focused positive/negative lifecycle tests → `14 passed`; common apostrophe and expanded negations stay open while explicit completion still works |
-| Ambiguous demonstrative recall | focused `this`/`that` E2E test → `2 failed`; response dumped both unrelated assistant records | focused tests → `3 passed`; unresolved demonstratives request a topic and disclose no unrelated history, while a unique immediate referent filters the answer |
-| Fresh-login history hydration | focused component test → failed to find the prior message after login | focused component test → `3 passed`; successful login fetches and renders existing chronological messages immediately |
-| Deployment-selected migration target | focused migration test → ignored `DATABASE_URL` and failed against the unavailable PostgreSQL ini target; async SQLite URL failed on missing `aiosqlite` | focused migration tests → `2 passed`; environment URL overrides the local Compose fallback, supported async forms use sync drivers, secrets stay out of output, and isolated SQLite upgrade/downgrade succeeds |
-| M1 quality/security hardening | focused privacy, concurrency, idempotency, PostgreSQL boundary, and migration tests failed on permissive Episode capture, application-only version checks, duplicate unique races, varchar overflow, and metadata-driven migration | focused tests pass with default-deny Episode capture, tenant-scoped atomic CAS, request fingerprints/savepoint race recovery, Text-backed narrative fields, and explicit Alembic operations |
-| Credential-like episodic-memory boundary | focused end-to-end reproduction persisted an unlabeled GitHub-shaped credential as an Episode and made it recallable | `17 passed` across representative GitHub, AWS, bearer/JWT, private-key, API-key-prefix, and high-entropy values plus normal technical-ID/prose false-positive cases; no Episode/provenance rows are created, recall stays empty, and the focused PostgreSQL regression passes |
+| Local date and deterministic Power List | `app.daily` import failed; then expected rank order failed | DST-safe local dates and bounded ranked reasons passed |
+| Morning runtime path | `DailyBriefing` model import failed | one structured briefing, same-chat proactive message, event/skill/Episode/provenance, and same-day logical idempotency passed |
+| Evening loop | `JournalEntry` model import failed; then negated unfinished text was incorrectly completed by generic extraction | same-chat check-in, verbatim journal, explicit supported updates, sourced Episodes, and reflection close passed |
+| Yesterday affects today | unfinished item lacked the expected boost/reason | completed work excluded and yesterday's unfinished open work resurfaced/ranked with reason |
+| Today/History API | `/api/today` response lacked `briefing` (route absent) | tenant-scoped Today and bounded journal browse/search passed, including two-user isolation |
+| M2 migration | upgraded schema lacked all daily-loop tables | explicit `0002` upgrade/downgrade passed |
+| Today component | module resolution failed because `app/today.tsx` did not exist | briefing, Power List reasons, resurfacing, reflection state, and absent-section behavior passed |
+| Authenticated Today hydration | UI could not find the Today heading | authenticated page fetches and renders Today beside persistent chat |
+| Stable injected-clock chronology | shared-history recall selected the wrong same-timestamp message | persisted message ordinals restore deterministic same-chat order |
 
-Tests were added before their corresponding runtime behavior. Configuration and documentation were added after behavioral slices. The persistence regression opens a fresh SQLAlchemy session against the same durable database after the request transaction.
-
-Dependency security was checked after upgrading Next/React/Vitest and the lint stack: `npm audit --json` reported 0 vulnerabilities (including 0 high/critical), and the regenerated lockfile is committed.
+Tests were written and observed failing before the corresponding runtime/UI behavior. Documentation followed the behavioral work.
 
 ## Delivered
 
-Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic explicit state extraction and transitions, idempotent unified runtime, credential-screened chat-created explicit attributed history, facet-filtered conversational shared-history recall, recall-contamination prevention, provenance, correction/deletion, M1 schema/migration, minimal login/chat UI, compose/Make/CI, and security/architecture docs.
+- `JournalEntry`, `DailyBriefing`, and `ReflectionPrompt` persistence with ownership, provenance, policy/date uniqueness, source links, UTC timestamps, local date, structured state, and verbatim reflection retention.
+- Unified morning/evening events through `AgentRuntime.handle`, thin daily skills, proactive messages in the same chat, AgentEvents, SkillRuns, Episodes, and audit provenance.
+- Interpretable deterministic `m2-v1` Power List over current state; no empty vocabulary/discovery placeholders and no M3 slack overbuild.
+- Explicit evening extraction boundaries for completion, unfinished work, priority changes, new commitments/threads, blockers, and outcomes; unsupported prose is retained but not promoted.
+- Next-morning continuity: completed work stays out; explicitly unfinished open work resurfaces with a ranking boost.
+- Tenant-scoped bounded Today and journal-history APIs plus minimal Today rendering.
+- Injected clock, IANA timezones/`zoneinfo`, DST coverage, catch-up idempotency, and real PostgreSQL concurrent-trigger coverage.
+- Explicit Alembic `0002` upgrade and downgrade; CI already runs the full PostgreSQL suite.
 
 ## Final verification
 
-`make check` passed with PostgreSQL integration enabled: backend `74 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. PostgreSQL 16 exercised real concurrent sessions, duplicate ingress races, input boundaries, and the credential-like episodic-memory regression. The explicit Alembic initial migration also completed upgrade/downgrade cycles against both isolated SQLite and PostgreSQL databases.
+- `POSTGRES_TEST_URL=… make check` passed: backend `82 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
+- Focused real-PostgreSQL M2 quality suite: `14 passed`, including concurrent same-day morning triggers producing exactly one logical briefing/proactive message.
+- Real-PostgreSQL Alembic cycle succeeded: `upgrade head` (`0001` → `0002`), `downgrade 0001`, then `upgrade head` again.
 
 ## Known limits
 
-This is M1 only. General deterministic response text is a test/development stub. Deadline strings are not normalized dates. Shared-history intent parsing is a small deterministic grammar for the documented recall facets rather than open-ended language understanding; conversational recall uses explicit, non-deleted Episode and state evidence with message provenance. Credential detection is deliberately conservative and is not a substitute for external secret scanning or DLP. The history API remains lexical. Scheduled events enter the runtime but M2 proactive policies are absent. Fast isolated tests use SQLite, while concurrency, migration, length-boundary, and credential-promotion regressions also run against PostgreSQL 16.
+M2 remains intentionally deterministic. Deadline hints are not normalized dates; M3 owns effort/slack and generalized urgency scans. The reflection grammar is narrow and explicit rather than open-ended language understanding. Vocabulary/discovery are omitted because M4/M6 data does not exist. Today UI is minimal; full navigation, journal correction/deletion UX, and polish remain M5. The deterministic model adapter remains development/test-only and no live Nebius/Nemotron claim is made.

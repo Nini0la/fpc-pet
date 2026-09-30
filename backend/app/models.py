@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -39,6 +41,7 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -63,6 +66,7 @@ class Message(Owned, Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     actor: Mapped[str] = mapped_column(String(20))
+    ordinal: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (CheckConstraint("role in ('user','assistant','system')"),)
 
 
@@ -73,6 +77,7 @@ class Thread(Owned, Base):
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     derivation: Mapped[str] = mapped_column(String(100))
     version: Mapped[int] = mapped_column(Integer, default=1)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (CheckConstraint("state in ('active','dormant','abandoned')"),)
 
@@ -86,6 +91,7 @@ class Commitment(Owned, Base):
     confidence: Mapped[float] = mapped_column(Float)
     derivation: Mapped[str] = mapped_column(String(100))
     version: Mapped[int] = mapped_column(Integer, default=1)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (CheckConstraint("state in ('open','complete','abandoned','dormant')"),)
 
@@ -136,3 +142,53 @@ class SkillRun(Owned, Base):
     event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
     skill_name: Mapped[str] = mapped_column(String(100))
     outcome: Mapped[str] = mapped_column(String(30))
+
+
+class DailyBriefing(Owned, Base):
+    __tablename__ = "daily_briefings"
+    local_date: Mapped[date] = mapped_column(Date)
+    policy_version: Mapped[str] = mapped_column(String(30))
+    content: Mapped[str] = mapped_column(Text)
+    sections: Mapped[dict] = mapped_column(JSON)
+    power_list: Mapped[list] = mapped_column(JSON)
+    message_id: Mapped[str | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    source_event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "local_date", "policy_version", name="uq_daily_briefing_policy"
+        ),
+    )
+
+
+class JournalEntry(Owned, Base):
+    __tablename__ = "journal_entries"
+    local_date: Mapped[date] = mapped_column(Date)
+    original_content: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    structured_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
+    source_event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    __table_args__ = (
+        UniqueConstraint("user_id", "local_date", name="uq_journal_entries_user_date"),
+    )
+
+
+class ReflectionPrompt(Owned, Base):
+    __tablename__ = "reflection_prompts"
+    local_date: Mapped[date] = mapped_column(Date)
+    policy_version: Mapped[str] = mapped_column(String(30))
+    status: Mapped[str] = mapped_column(String(20), default="awaiting")
+    message_id: Mapped[str | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
+    source_event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
+    journal_entry_id: Mapped[str | None] = mapped_column(
+        ForeignKey("journal_entries.id"), nullable=True
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "local_date", "policy_version", name="uq_reflection_prompt_policy"
+        ),
+        CheckConstraint("status in ('awaiting','completed')"),
+    )

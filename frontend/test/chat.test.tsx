@@ -31,7 +31,11 @@ describe("Page",()=>{
       .mockResolvedValueOnce(new Response(JSON.stringify(prior),{
         status:200,
         headers:{"content-type":"application/json"},
-      }));
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        local_date:"2026-09-30",briefing:null,power_list:[],open_commitments:[],
+        resurfaced_items:[],evening_reflection:{status:"not_started",journal:null},
+      }),{status:200,headers:{"content-type":"application/json"}}));
 
     render(<Page/>);
     await screen.findByLabelText("Access code");
@@ -40,7 +44,27 @@ describe("Page",()=>{
 
     expect(await screen.findByText("Earlier question")).toBeInTheDocument();
     expect(screen.getByText("Earlier answer")).toBeInTheDocument();
-    await waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(3));
+    await waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(4));
     expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages");
+    expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8000/api/today");
+  });
+
+  it("renders Today data for an authenticated user",async()=>{
+    const today={
+      local_date:"2026-09-30",
+      briefing:{content:"Morning continuity",local_date:"2026-09-30"},
+      power_list:[],
+      open_commitments:[],
+      resurfaced_items:[],
+      evening_reflection:{status:"not_started",journal:null},
+    };
+    vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(new Response("[]",{status:200,headers:{"content-type":"application/json"}}))
+      .mockResolvedValueOnce(new Response(JSON.stringify(today),{status:200,headers:{"content-type":"application/json"}}));
+
+    render(<Page/>);
+
+    expect(await screen.findByRole("heading",{name:"Today"})).toBeInTheDocument();
+    expect(screen.getByText("Morning continuity")).toBeInTheDocument();
   });
 });

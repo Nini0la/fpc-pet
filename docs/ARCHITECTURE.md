@@ -1,13 +1,27 @@
 # Architecture
 
-## Milestone 1 boundary
+## Milestone 2 boundary
 
-One FastAPI service and one Next.js app use PostgreSQL as production authority. SQLite is limited to isolated API tests. There is no broker, vector database, or agent framework. Conversation segmentation is internal; the UI exposes one continuing relationship.
+One FastAPI service and one Next.js app use PostgreSQL as production authority. SQLite remains limited to isolated API/unit tests. There is no broker, vector database, graph orchestration engine, or private FPC machinery. Conversation segmentation is internal; chat, morning briefings, and evening check-ins share one continuing relationship.
 
-`AgentRuntime.handle(RuntimeEvent)` is the only event entry point for both user messages and scheduled events. Plain deterministic extraction proposes state; the runtime validates and persists proposals, messages, provenance, events, and skill runs in one transaction. Model proposals never receive an ORM session. `ModelRouter` is a protocol ready for a future Nebius/Nemotron adapter; deterministic replies must be explicitly configured for development/test and are not live model output.
+`AgentRuntime.handle(RuntimeEvent)` is the only event entry point for user and scheduled events. `MorningBriefingSkill` and `EveningReflectionSkill` are thin deterministic skills called by that runtime. A transaction records the `AgentEvent`, `SkillRun`, proactive/user messages, journal/state mutations, Episodes, and provenance together. Model proposals never receive an ORM session. `ModelRouter` remains the future live-provider boundary; deterministic replies are explicitly development/test-only.
 
-All durable records are UUID-owned by a user and tenant filters are mandatory. Mutable threads, commitments, and episodes use tenant-scoped atomic compare-and-swap updates for corrections, soft deletion, and runtime transitions. Derived state includes confidence, derivation, and `ProvenanceLink`. Recall is explicit SQL over non-deleted episodes and preserves `user`, `assistant`, `joint`, or `discussed_only` attribution; episodic capture is default-deny and accepts only supported explicit events/actions/decisions. It does not infer authorship and does not use embeddings.
+### Daily loop
 
-PostgreSQL is migrated with Alembic. The initial migration reflects the complete M1 schema: User, server Session, internal ConversationSession, Message, Thread, Commitment, Episode/links, AgentEvent, ProvenanceLink, and SkillRun.
+`User.timezone` plus an injected timezone-aware clock and `zoneinfo` determine local dates, including DST transitions. `DailyBriefing` persists the rendered briefing, named non-empty sections, structured Power List, source event, policy version, and chat message. A unique `(user_id, local_date, policy_version)` constraint is the logical morning idempotency authority. `ReflectionPrompt` applies the same pattern to evening check-ins and tracks `awaiting`/`completed` state. Repeated or catch-up triggers for a local day do not duplicate proactive messages.
 
-Milestones 2–6 (briefings, polished Today/Threads/History, external discovery, vocabulary loops, and autonomous actions) are out of scope.
+The M2 `m2-v1` Power List is intentionally simple and replaceable. It scores currently open commitments and active threads using available deadline hints, explicit importance words, user priority, inactivity, recent promises, and IDs explicitly marked unfinished in yesterday's journal. It returns at most three deterministic selections with observable reasons. Schedule-slack/effort optimization remains M3.
+
+An evening answer is stored unchanged in `JournalEntry.original_content`, with optional summary and structured supported changes, source message/event, UTC timestamps, and user-local date. Extraction recognizes only narrow explicit forms for completion, unfinished work, changed priority, new commitments/threads, blockers, and labelled outcomes. Structured updates and sourced Episodes occur in the same transaction. The following morning excludes completed commitments and boosts still-open items explicitly marked unfinished.
+
+### Persistence and APIs
+
+All durable records are UUID-owned by a user and tenant filters are mandatory. Mutable threads, commitments, and episodes retain versioned correction/deletion behavior. Derived state has confidence, derivation, and `ProvenanceLink`; audit rows store observable action/reason metadata, not hidden chain-of-thought or prompts. Message ordinals preserve same-chat ordering under a controllable clock.
+
+`GET /api/today` returns only the authenticated user's local-day briefing, Power List, open commitments, resurfaced items, and reflection state. `GET /api/history/journals` is tenant-scoped with bounded query, limit, and offset. The Next.js page renders a minimal Today surface alongside chat; full navigation/polish remains M5.
+
+PostgreSQL is migrated with explicit Alembic revisions. `0001` is the M1 foundation; `0002` adds timezone/priority/message-order fields and daily briefings, reflection prompts, and journal entries with a complete downgrade.
+
+## Deferred
+
+M3 schedule slack and urgency scans, M4 vocabulary, M5 full Today/Threads/History polish, M6 discovery/integrations, and a production model adapter are out of scope.

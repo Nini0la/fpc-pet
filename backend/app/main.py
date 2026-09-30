@@ -15,13 +15,17 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
 from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, RuntimeEvent
+from .daily import POLICY_VERSION, local_date_for
 from .models import (
     Base,
     Commitment,
     ConversationSession,
+    DailyBriefing,
     Episode,
+    JournalEntry,
     Message,
     ProvenanceLink,
+    ReflectionPrompt,
     Session,
     Thread,
     User,
@@ -213,7 +217,9 @@ def send_message(
 @app.get("/api/chat/messages")
 def messages(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
     rows = db.scalars(
-        select(Message).where(Message.user_id == user.id).order_by(Message.created_at, Message.id)
+        select(Message)
+        .where(Message.user_id == user.id)
+        .order_by(Message.ordinal, Message.created_at, Message.id)
     ).all()
     return [
         {"id": x.id, "role": x.role, "content": x.content, "created_at": x.created_at} for x in rows
@@ -518,6 +524,70 @@ def recall(
         }
         for x in rows
     ]
+
+
+@app.get("/api/today")
+def today(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
+    local_date = local_date_for(runtime.clock.now(), user.timezone)
+    briefing = db.scalar(
+        select(DailyBriefing).where(
+            DailyBriefing.user_id == user.id,
+            DailyBriefing.local_date == local_date,
+            DailyBriefing.policy_version == POLICY_VERSION,
+        )
+    )
+    open_items = db.scalars(
+        select(Commitment)
+        .where(
+            Commitment.user_id == user.id,
+            Commitment.deleted.is_(False),
+            Commitment.state == "open",
+        )
+        .order_by(Commitment.created_at, Commitment.id)
+    ).all()
+    prompt = db.scalar(
+        select(ReflectionPrompt).where(
+            ReflectionPrompt.user_id == user.id,
+            ReflectionPrompt.local_date == local_date,
+            ReflectionPrompt.policy_version == POLICY_VERSION,
+        )
+    )
+    journal = db.scalar(
+        select(JournalEntry).where(
+            JournalEntry.user_id == user.id, JournalEntry.local_date == local_date
+        )
+    )
+    reflection_status = "completed" if journal else "awaiting" if prompt else "not_started"
+    return {
+        "local_date": local_date,
+        "briefing": item_dict(briefing) if briefing else None,
+        "power_list": briefing.power_list if briefing else [],
+        "open_commitments": [item_dict(item) for item in open_items],
+        "resurfaced_items": (briefing.sections.get("yesterday_unfinished", []) if briefing else []),
+        "evening_reflection": {
+            "status": reflection_status,
+            "journal": item_dict(journal) if journal else None,
+        },
+    }
+
+
+@app.get("/api/history/journals")
+def journal_history(
+    q: str | None = Query(default=None, min_length=1, max_length=500),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    statement = select(JournalEntry).where(JournalEntry.user_id == user.id)
+    if q:
+        statement = statement.where(JournalEntry.original_content.icontains(q, autoescape=True))
+    rows = db.scalars(
+        statement.order_by(JournalEntry.local_date.desc(), JournalEntry.id)
+        .offset(offset)
+        .limit(limit + 1)
+    ).all()
+    return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
 
 
 class ScheduledIn(BaseModel):
