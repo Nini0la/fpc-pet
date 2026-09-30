@@ -21,6 +21,7 @@
 | Ambiguous demonstrative recall | focused `this`/`that` E2E test → `2 failed`; response dumped both unrelated assistant records | focused tests → `3 passed`; unresolved demonstratives request a topic and disclose no unrelated history, while a unique immediate referent filters the answer |
 | Fresh-login history hydration | focused component test → failed to find the prior message after login | focused component test → `3 passed`; successful login fetches and renders existing chronological messages immediately |
 | Deployment-selected migration target | focused migration test → ignored `DATABASE_URL` and failed against the unavailable PostgreSQL ini target; async SQLite URL failed on missing `aiosqlite` | focused migration tests → `2 passed`; environment URL overrides the local Compose fallback, supported async forms use sync drivers, secrets stay out of output, and isolated SQLite upgrade/downgrade succeeds |
+| M1 quality/security hardening | focused privacy, concurrency, idempotency, PostgreSQL boundary, and migration tests failed on permissive Episode capture, application-only version checks, duplicate unique races, varchar overflow, and metadata-driven migration | focused tests pass with default-deny Episode capture, tenant-scoped atomic CAS, request fingerprints/savepoint race recovery, Text-backed narrative fields, and explicit Alembic operations |
 
 Tests were added before their corresponding runtime behavior. Configuration and documentation were added after behavioral slices. The persistence regression opens a fresh SQLAlchemy session against the same durable database after the request transaction.
 
@@ -32,8 +33,8 @@ Secure opaque sessions/CSRF, tenant scoping, persistent chat, deterministic expl
 
 ## Final verification
 
-`make check` passed: backend `42 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. The Alembic initial migration completed a `DATABASE_URL`-selected upgrade/downgrade cycle against an isolated SQLite database (12 tables at revision `0001`; application tables removed on downgrade).
+`make check` passed with PostgreSQL integration enabled: backend `56 passed`, Ruff clean, mypy clean; frontend `3 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful. PostgreSQL 16 exercised real concurrent sessions, duplicate ingress races, and input boundaries. The explicit Alembic initial migration also completed upgrade/downgrade cycles against both isolated SQLite and PostgreSQL databases.
 
 ## Known limits
 
-This is M1 only. General deterministic response text is a test/development stub. Deadline strings are not normalized dates. Shared-history intent parsing is a small deterministic grammar for the documented recall facets rather than open-ended language understanding; conversational recall uses explicit, non-deleted Episode and state evidence with message provenance. The history API remains lexical. Scheduled events enter the runtime but M2 proactive policies are absent. Tests use SQLite while production is PostgreSQL.
+This is M1 only. General deterministic response text is a test/development stub. Deadline strings are not normalized dates. Shared-history intent parsing is a small deterministic grammar for the documented recall facets rather than open-ended language understanding; conversational recall uses explicit, non-deleted Episode and state evidence with message provenance. The history API remains lexical. Scheduled events enter the runtime but M2 proactive policies are absent. Fast isolated tests use SQLite, while concurrency, migration, and length-boundary regressions also run against PostgreSQL 16.

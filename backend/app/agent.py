@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .clock import Clock, SystemClock
 from .history import SharedHistoryRecallSkill
 from .models import AgentEvent, Commitment, Episode, Message, ProvenanceLink, SkillRun, Thread
+from .persistence import MutationResult, atomic_update
 from .runtime import DeterministicModel, StateExtractor
 
 
@@ -18,6 +23,14 @@ class RuntimeEvent:
     kind: str
     content: str | None = None
     conversation_id: str | None = None
+
+
+class IdempotencyConflict(Exception):
+    pass
+
+
+class ConcurrentMutation(Exception):
+    pass
 
 
 class AgentRuntime:
@@ -31,17 +44,52 @@ class AgentRuntime:
         self.clock = clock or SystemClock()
         self.history = SharedHistoryRecallSkill(self.clock)
 
+    @staticmethod
+    def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
+        relevant = {
+            "content": event.content,
+            "kind": event.kind,
+            "user_id": user_id,
+        }
+        canonical = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    @staticmethod
+    def _idempotent_result(prior: AgentEvent, fingerprint: str) -> dict[str, Any]:
+        if not hmac.compare_digest(prior.request_fingerprint, fingerprint):
+            raise IdempotencyConflict("Idempotency key already used for different input")
+        return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
+
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
+        fingerprint = self._fingerprint(user_id, event)
         prior = db.scalar(
             select(AgentEvent).where(
                 AgentEvent.user_id == user_id, AgentEvent.external_id == event.external_id
             )
         )
         if prior:
-            return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
-        recorded = AgentEvent(user_id=user_id, external_id=event.external_id, kind=event.kind)
-        db.add(recorded)
-        db.flush()
+            return self._idempotent_result(prior, fingerprint)
+        recorded = AgentEvent(
+            user_id=user_id,
+            external_id=event.external_id,
+            kind=event.kind,
+            request_fingerprint=fingerprint,
+        )
+        try:
+            with db.begin_nested():
+                db.add(recorded)
+                db.flush()
+        except IntegrityError:
+            db.expire_all()
+            prior = db.scalar(
+                select(AgentEvent).where(
+                    AgentEvent.user_id == user_id,
+                    AgentEvent.external_id == event.external_id,
+                )
+            )
+            if prior is None:
+                raise
+            return self._idempotent_result(prior, fingerprint)
         if event.kind == "user_message" and event.content and event.conversation_id:
             user_message = Message(
                 user_id=user_id,
@@ -138,8 +186,17 @@ class AgentRuntime:
                 if matches:
                     target = matches[-1]
                     state = "active" if proposal.transition == "reactivate" else proposal.transition
-                    target.state = "abandoned" if state == "abandon" else state
-                    target.version += 1
+                    state = "abandoned" if state == "abandon" else state
+                    outcome = atomic_update(
+                        db,
+                        type(target),
+                        target.id,
+                        user_id,
+                        target.version,
+                        {"state": state},
+                    )
+                    if outcome is not MutationResult.UPDATED:
+                        raise ConcurrentMutation(outcome.value)
                     db.add(
                         ProvenanceLink(
                             user_id=user_id,

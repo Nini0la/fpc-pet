@@ -72,6 +72,16 @@ def test_event_idempotency_and_input_bound(client):
     assert client.post("/api/chat/messages", json=payload, headers=h).status_code == 201
     assert client.post("/api/chat/messages", json=payload, headers=h).status_code == 200
     assert len(client.get("/api/threads").json()) == 1
+    assert client.post(
+        "/api/chat/messages",
+        json={"content": "different delivery", "event_id": "same"},
+        headers=h,
+    ).status_code == 409
+    assert client.post(
+        "/api/events/scheduled",
+        json={"event_id": "same", "kind": "dormancy_scan"},
+        headers=h,
+    ).status_code == 409
     assert (
         client.post(
             "/api/chat/messages", json={"content": "x" * 4001, "event_id": "long"}, headers=h
@@ -122,6 +132,14 @@ def test_correction_audit_is_content_free_and_delete_prevents_recall(client):
     audit = client.get(f"/api/provenance/{item['id']}").json()
     assert audit[-1]["derivation"] == "user-correction"
     assert "local systems" not in str(audit[-1])
+    assert client.patch(
+        f"/api/threads/{item['id']}",
+        json={"title": "stale write", "version": 1},
+        headers=h,
+    ).status_code == 409
+    assert client.delete(
+        f"/api/threads/{item['id']}", params={"version": 1}, headers=h
+    ).status_code == 409
     assert client.delete(f"/api/threads/{item['id']}", headers=h).status_code == 204
     assert client.get("/api/history/recall", params={"q": "local systems"}).json() == []
 
@@ -185,6 +203,26 @@ def test_chat_builds_explicit_actor_attributed_episode_history_across_sessions(c
                 "metadata_only": False,
             }
         ]
+
+
+def test_ephemeral_sensitive_and_interrogative_messages_are_not_episodes(client):
+    login(client)
+    h = csrf(client)
+    for event_id, content in [
+        ("greeting", "Hello there!"),
+        ("question", "How does PostgreSQL concurrency work?"),
+        ("secret", "my password is hunter2"),
+    ]:
+        response = client.post(
+            "/api/chat/messages",
+            json={"content": content, "event_id": event_id},
+            headers=h,
+        )
+        assert response.status_code == 201
+
+    assert client.get(
+        "/api/history/recall", params={"q": "hello PostgreSQL hunter2"}
+    ).json() == []
 
 
 @pytest.mark.parametrize(

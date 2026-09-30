@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, or_, select
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
-from .agent import AgentRuntime, RuntimeEvent
+from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, RuntimeEvent
 from .models import (
     Base,
     Commitment,
@@ -27,6 +27,7 @@ from .models import (
     User,
     utcnow,
 )
+from .persistence import MutationResult, atomic_update
 from .security import resolve_login_username
 
 ENV = os.getenv("APP_ENV", "production")
@@ -197,9 +198,13 @@ def send_message(
         conversation = ConversationSession(user_id=user.id)
         db.add(conversation)
         db.flush()
-    result = runtime.handle(
-        db, user.id, RuntimeEvent(body.event_id, "user_message", body.content, conversation.id)
-    )
+    try:
+        result = runtime.handle(
+            db, user.id, RuntimeEvent(body.event_id, "user_message", body.content, conversation.id)
+        )
+    except (IdempotencyConflict, ConcurrentMutation) as error:
+        db.rollback()
+        raise HTTPException(409, str(error)) from error
     if result["idempotent"]:
         response.status_code = 200
     return result
@@ -252,6 +257,13 @@ def owned_thread(id: str, user: User, db: DBSession) -> Thread:
     return item
 
 
+def require_mutation(result: MutationResult) -> None:
+    if result is MutationResult.CONFLICT:
+        raise HTTPException(409, "Version conflict")
+    if result is MutationResult.NOT_FOUND:
+        raise HTTPException(404, "Not found")
+
+
 @app.get("/api/threads/{id}")
 def get_thread(id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)):
     return item_dict(owned_thread(id, user, db))
@@ -269,15 +281,11 @@ def correct_thread(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    item = owned_thread(id, user, db)
-    if item.version != body.version:
-        raise HTTPException(409, "Version conflict")
-    item.title = body.title
-    item.version += 1
+    require_mutation(atomic_update(db, Thread, id, user.id, body.version, {"title": body.title}))
     db.add(
         ProvenanceLink(
             user_id=user.id,
-            target_id=item.id,
+            target_id=id,
             source_type="correction",
             source_id=None,
             confidence=1.0,
@@ -286,15 +294,27 @@ def correct_thread(
         )
     )
     db.commit()
-    return item_dict(item)
+    return item_dict(owned_thread(id, user, db))
 
 
 @app.delete("/api/threads/{id}", status_code=204, dependencies=[Depends(mutation_guard)])
-def delete_thread(id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)):
+def delete_thread(
+    id: str,
+    version: Annotated[int | None, Query(ge=1)] = None,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
     item = owned_thread(id, user, db)
-    item.deleted = True
-    item.title = "[deleted]"
-    item.version += 1
+    require_mutation(
+        atomic_update(
+            db,
+            Thread,
+            id,
+            user.id,
+            version if version is not None else item.version,
+            {"deleted": True, "title": "[deleted]"},
+        )
+    )
     db.commit()
 
 
@@ -321,15 +341,13 @@ def correct_commitment(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    item = owned_record(Commitment, id, user, db)
-    if item.version != body.version:
-        raise HTTPException(409, "Version conflict")
-    item.title = body.title
-    item.version += 1
+    require_mutation(
+        atomic_update(db, Commitment, id, user.id, body.version, {"title": body.title})
+    )
     db.add(
         ProvenanceLink(
             user_id=user.id,
-            target_id=item.id,
+            target_id=id,
             source_type="correction",
             source_id=None,
             confidence=1.0,
@@ -338,17 +356,27 @@ def correct_commitment(
         )
     )
     db.commit()
-    return item_dict(item)
+    return item_dict(owned_record(Commitment, id, user, db))
 
 
 @app.delete("/api/commitments/{id}", status_code=204, dependencies=[Depends(mutation_guard)])
 def delete_commitment(
-    id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)
+    id: str,
+    version: Annotated[int | None, Query(ge=1)] = None,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
 ):
     item = owned_record(Commitment, id, user, db)
-    item.deleted = True
-    item.title = "[deleted]"
-    item.version += 1
+    require_mutation(
+        atomic_update(
+            db,
+            Commitment,
+            id,
+            user.id,
+            version if version is not None else item.version,
+            {"deleted": True, "title": "[deleted]"},
+        )
+    )
     db.commit()
 
 
@@ -426,15 +454,13 @@ def correct_episode(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    item = owned_record(Episode, id, user, db)
-    if item.version != body.version:
-        raise HTTPException(409, "Version conflict")
-    item.summary = body.summary
-    item.version += 1
+    require_mutation(
+        atomic_update(db, Episode, id, user.id, body.version, {"summary": body.summary})
+    )
     db.add(
         ProvenanceLink(
             user_id=user.id,
-            target_id=item.id,
+            target_id=id,
             source_type="correction",
             source_id=None,
             confidence=1.0,
@@ -443,17 +469,27 @@ def correct_episode(
         )
     )
     db.commit()
-    return item_dict(item)
+    return item_dict(owned_record(Episode, id, user, db))
 
 
 @app.delete("/api/episodes/{id}", status_code=204, dependencies=[Depends(mutation_guard)])
 def delete_episode(
-    id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)
+    id: str,
+    version: Annotated[int | None, Query(ge=1)] = None,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
 ):
     item = owned_record(Episode, id, user, db)
-    item.deleted = True
-    item.summary = "[deleted]"
-    item.version += 1
+    require_mutation(
+        atomic_update(
+            db,
+            Episode,
+            id,
+            user.id,
+            version if version is not None else item.version,
+            {"deleted": True, "summary": "[deleted]"},
+        )
+    )
     db.commit()
 
 
@@ -493,4 +529,8 @@ class ScheduledIn(BaseModel):
 def scheduled(
     body: ScheduledIn, db: DBSession = Depends(db_session), user: User = Depends(current_user)
 ):
-    return runtime.handle(db, user.id, RuntimeEvent(body.event_id, body.kind))
+    try:
+        return runtime.handle(db, user.id, RuntimeEvent(body.event_id, body.kind))
+    except (IdempotencyConflict, ConcurrentMutation) as error:
+        db.rollback()
+        raise HTTPException(409, str(error)) from error

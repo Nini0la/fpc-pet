@@ -99,9 +99,12 @@ class SharedHistoryRecallSkill:
 
     def actor_for(self, text: str) -> str | None:
         lower = " ".join(text.lower().split())
-        # State-setting utterances are represented by Thread/Commitment records,
-        # not duplicated as claims that an episode already happened.
-        if lower.startswith(("hang onto this idea", "i need to ")):
+        # Episodic capture is default-deny. State-setting utterances have their
+        # own durable representation, while questions, greetings, and arbitrary
+        # chat must not silently become shared-history claims.
+        if lower.startswith(("hang onto this idea", "i need to ")) or lower.endswith("?"):
+            return None
+        if re.search(r"\b(?:password|passcode|api[ _-]?key|secret|token)\b", lower):
             return None
         discussed_markers = (
             "we only discussed ",
@@ -112,13 +115,36 @@ class SharedHistoryRecallSkill:
         )
         if lower.startswith(discussed_markers):
             return "discussed_only"
-        if lower.startswith("we "):
+        explicit_actions = (
+            "agreed",
+            "built",
+            "completed",
+            "concluded",
+            "created",
+            "decided",
+            "deployed",
+            "designed",
+            "drafted",
+            "found",
+            "helped",
+            "implemented",
+            "launched",
+            "met",
+            "shipped",
+            "started",
+            "submitted",
+            "tested",
+            "told",
+            "tried",
+        )
+        action = "(?:" + "|".join(explicit_actions) + ")"
+        if re.match(rf"^we {action}\b", lower):
             return "joint"
-        if lower.startswith("you "):
+        if re.match(rf"^you {action}\b", lower):
             return "assistant"
-        if lower.startswith("i ") or lower.startswith("i've ") or lower.startswith("i’ve "):
+        if re.match(rf"^i(?:'ve|’ve| have)? {action}\b", lower):
             return "user"
-        return "discussed_only"
+        return None
 
     @staticmethod
     def _topic_matches(summary: str, topic: str) -> bool:

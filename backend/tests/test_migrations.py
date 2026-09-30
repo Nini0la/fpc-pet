@@ -50,3 +50,12 @@ def test_database_url_is_converted_to_a_sync_driver(tmp_path: Path):
     assert upgraded.returncode == 0, upgraded.stderr
     assert "users" in table_names(database_path)
     assert database_url not in upgraded.stdout + upgraded.stderr
+
+
+def test_initial_migration_uses_explicit_alembic_operations():
+    migration = Path("alembic/versions/0001_persistent_continuity.py").read_text()
+
+    assert "op.create_table" in migration
+    assert "op.drop_table" in migration
+    assert "metadata.create_all" not in migration
+    assert "metadata.drop_all" not in migration

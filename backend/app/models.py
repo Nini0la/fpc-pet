@@ -68,7 +68,7 @@ class Message(Owned, Base):
 
 class Thread(Owned, Base):
     __tablename__ = "threads"
-    title: Mapped[str] = mapped_column(String(500))
+    title: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(20), default="active")
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     derivation: Mapped[str] = mapped_column(String(100))
@@ -79,9 +79,9 @@ class Thread(Owned, Base):
 
 class Commitment(Owned, Base):
     __tablename__ = "commitments"
-    title: Mapped[str] = mapped_column(String(500))
+    title: Mapped[str] = mapped_column(Text)
     state: Mapped[str] = mapped_column(String(20), default="open")
-    deadline_hint: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    deadline_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     effort_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
     derivation: Mapped[str] = mapped_column(String(100))
@@ -92,7 +92,7 @@ class Commitment(Owned, Base):
 
 class Episode(Owned, Base):
     __tablename__ = "episodes"
-    summary: Mapped[str] = mapped_column(String(1000))
+    summary: Mapped[str] = mapped_column(Text)
     actor: Mapped[str] = mapped_column(String(30))
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     derivation: Mapped[str] = mapped_column(String(100), default="user-authored")
@@ -116,6 +116,7 @@ class AgentEvent(Owned, Base):
     __tablename__ = "agent_events"
     external_id: Mapped[str] = mapped_column(String(100))
     kind: Mapped[str] = mapped_column(String(50))
+    request_fingerprint: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="handled")
     __table_args__ = (UniqueConstraint("user_id", "external_id"),)
 
