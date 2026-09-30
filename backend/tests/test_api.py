@@ -141,6 +141,127 @@ def test_shared_history_actor_accuracy(client):
     assert all(x["source"] and x["confidence"] <= 1 for x in recalled)
 
 
+def test_chat_builds_explicit_actor_attributed_episode_history_across_sessions(client):
+    login(client)
+    h = csrf(client)
+    interactions = [
+        ("history-user", "I submitted the launch plan.", "user"),
+        ("history-assistant", "You found the API documentation.", "assistant"),
+        ("history-joint", "We designed the prototype.", "joint"),
+        ("history-discussed", "We only discussed deploying it.", "discussed_only"),
+    ]
+    for index, (event_id, content, _actor) in enumerate(interactions):
+        response = client.post(
+            "/api/chat/messages",
+            json={"content": content, "event_id": event_id},
+            headers=h,
+        )
+        assert response.status_code == 201
+        if index == 1:
+            assert client.post("/api/auth/logout", headers=h).status_code == 204
+            assert login(client).status_code == 200
+            h = csrf(client)
+
+    episodes = client.get(
+        "/api/history/recall",
+        params={"q": "submitted documentation designed deploying"},
+    ).json()
+    assert [(episode["summary"], episode["actor"]) for episode in episodes] == [
+        (content, actor) for _, content, actor in interactions
+    ]
+    message_ids = {message["id"] for message in client.get("/api/chat/messages").json()}
+    for episode in episodes:
+        assert episode["source"].startswith("message:")
+        links = client.get(f"/api/provenance/{episode['id']}").json()
+        assert links[0]["source_id"] in message_ids
+        assert links == [
+            {
+                "id": links[0]["id"],
+                "source_type": "message",
+                "source_id": episode["source"].removeprefix("message:"),
+                "confidence": episode["confidence"],
+                "derivation": "explicit-chat-episode-v1",
+                "metadata_only": False,
+            }
+        ]
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["What have we been doing?", "What have you helped me with?", "What have we tried?"],
+)
+def test_chat_recall_is_chronological_sourced_and_uncertainty_aware(client, question):
+    login(client)
+    h = csrf(client)
+    facts = [
+        ("I submitted the launch plan.", "user"),
+        ("You found the API documentation.", "assistant"),
+        ("We designed the prototype.", "joint"),
+        ("We only discussed deploying it.", "discussed_only"),
+    ]
+    for index, (content, _actor) in enumerate(facts):
+        assert (
+            client.post(
+                "/api/chat/messages",
+                json={"content": content, "event_id": f"fact-{index}"},
+                headers=h,
+            ).status_code
+            == 201
+        )
+
+    recall_response = client.post(
+        "/api/chat/messages",
+        json={"content": question, "event_id": "recall-question"},
+        headers=h,
+    )
+    assert recall_response.status_code == 201
+    assert recall_response.json()["handled_by"] == "AgentRuntime.handle"
+    answer = client.get("/api/chat/messages").json()[-1]["content"]
+    assert "recorded claims, not independently verified facts" in answer
+    assert [answer.index(summary) for summary, _ in facts] == sorted(
+        answer.index(summary) for summary, _ in facts
+    )
+    for summary, actor in facts:
+        line = next(line for line in answer.splitlines() if summary in line)
+        assert f"[{actor}; source message:" in line
+        assert "confidence " in line
+
+
+def test_chat_recall_uses_corrected_history_and_excludes_deleted_history(client):
+    login(client)
+    h = csrf(client)
+    for event_id, content in [
+        ("stale", "I drafted the stale launch plan."),
+        ("deleted", "You tested the discarded prototype."),
+    ]:
+        client.post(
+            "/api/chat/messages", json={"content": content, "event_id": event_id}, headers=h
+        )
+    episodes = client.get(
+        "/api/history/recall", params={"q": "stale discarded"}
+    ).json()
+    corrected, deleted = episodes
+    assert (
+        client.patch(
+            f"/api/episodes/{corrected['id']}",
+            json={"summary": "I drafted the corrected launch plan.", "version": 1},
+            headers=h,
+        ).status_code
+        == 200
+    )
+    assert client.delete(f"/api/episodes/{deleted['id']}", headers=h).status_code == 204
+
+    client.post(
+        "/api/chat/messages",
+        json={"content": "What have we tried?", "event_id": "recall-after-edits"},
+        headers=h,
+    )
+    answer = client.get("/api/chat/messages").json()[-1]["content"]
+    assert "I drafted the corrected launch plan." in answer
+    assert "stale launch plan" not in answer
+    assert "discarded prototype" not in answer
+
+
 def test_commitment_and_episode_correction_and_deletion(client):
     login(client)
     h = csrf(client)

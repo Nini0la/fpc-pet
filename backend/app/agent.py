@@ -6,7 +6,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import AgentEvent, Commitment, Message, ProvenanceLink, SkillRun, Thread
+from .history import SharedHistoryRecallSkill
+from .models import AgentEvent, Commitment, Episode, Message, ProvenanceLink, SkillRun, Thread
 from .runtime import DeterministicModel, StateExtractor
 
 
@@ -24,6 +25,7 @@ class AgentRuntime:
     def __init__(self, model: DeterministicModel | None = None) -> None:
         self.extractor = StateExtractor()
         self.model = model or DeterministicModel()
+        self.history = SharedHistoryRecallSkill()
 
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
         prior = db.scalar(
@@ -46,6 +48,29 @@ class AgentRuntime:
             )
             db.add(user_message)
             db.flush()
+            recalling_history = self.history.matches(event.content)
+            episode_actor = self.history.actor_for(event.content)
+            if not recalling_history and episode_actor is not None:
+                episode = Episode(
+                    user_id=user_id,
+                    summary=" ".join(event.content.strip().split()),
+                    actor=episode_actor,
+                    confidence=0.9,
+                    derivation="explicit-chat-episode-v1",
+                    source=f"message:{user_message.id}",
+                )
+                db.add(episode)
+                db.flush()
+                db.add(
+                    ProvenanceLink(
+                        user_id=user_id,
+                        target_id=episode.id,
+                        source_type="message",
+                        source_id=user_message.id,
+                        confidence=episode.confidence,
+                        derivation=episode.derivation,
+                    )
+                )
             proposal = self.extractor.extract(event.content)
             target: Commitment | Thread | None = None
             if proposal.kind == "commitment":
@@ -118,11 +143,12 @@ class AgentRuntime:
                             derivation="explicit-state-transition-v1",
                         )
                     )
-            reply = (
-                "What should I remind you about?"
-                if proposal.kind == "clarification"
-                else self.model.respond(event.content)
-            )
+            if recalling_history:
+                reply = self.history.answer(db, user_id)
+            elif proposal.kind == "clarification":
+                reply = "What should I remind you about?"
+            else:
+                reply = self.model.respond(event.content)
             db.add(
                 Message(
                     user_id=user_id,
@@ -136,9 +162,15 @@ class AgentRuntime:
             SkillRun(
                 user_id=user_id,
                 event_id=recorded.id,
-                skill_name="state-extraction"
-                if event.kind == "user_message"
-                else "scheduled-event",
+                skill_name=(
+                    "shared-history-recall"
+                    if event.kind == "user_message"
+                    and event.content
+                    and self.history.matches(event.content)
+                    else "state-extraction"
+                    if event.kind == "user_message"
+                    else "scheduled-event"
+                ),
                 outcome="handled",
             )
         )
