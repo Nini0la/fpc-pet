@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -14,7 +15,15 @@ from sqlalchemy.orm import Session
 from .clock import Clock, SystemClock
 from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .history import SharedHistoryRecallSkill
-from .models import AgentEvent, Commitment, Episode, ProvenanceLink, SkillRun, Thread
+from .models import (
+    AgentEvent,
+    Commitment,
+    ConversationSession,
+    Episode,
+    ProvenanceLink,
+    SkillRun,
+    Thread,
+)
 from .persistence import MutationResult, append_message, atomic_update
 from .runtime import DeterministicModel, StateExtractor, StateProposal
 
@@ -54,23 +63,56 @@ class AgentRuntime:
         return event.conversation_id if event.kind == "user_message" else None
 
     @staticmethod
-    def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
+    def _canonical_request(user_id: str, event: RuntimeEvent, *, include_target: bool) -> bytes:
         relevant = {
             "content": event.content,
-            "conversation_target": AgentRuntime._conversation_target(event),
             "intended_local_date": (
                 event.intended_local_date.isoformat() if event.intended_local_date else None
             ),
             "kind": event.kind,
             "user_id": user_id,
         }
-        canonical = json.dumps(relevant, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
+        if include_target:
+            relevant["conversation_target"] = AgentRuntime._conversation_target(event)
+        return json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
-    def _idempotent_result(prior: AgentEvent, fingerprint: str) -> dict[str, Any]:
-        if not hmac.compare_digest(prior.request_fingerprint, fingerprint):
+    def _fingerprint(user_id: str, event: RuntimeEvent) -> str:
+        digest = hashlib.sha256(
+            AgentRuntime._canonical_request(user_id, event, include_target=True)
+        ).digest()
+        return "v2:" + base64.urlsafe_b64encode(digest).decode().rstrip("=")
+
+    @staticmethod
+    def _legacy_fingerprint(user_id: str, event: RuntimeEvent) -> str:
+        return hashlib.sha256(
+            AgentRuntime._canonical_request(user_id, event, include_target=False)
+        ).hexdigest()
+
+    @staticmethod
+    def _idempotent_result(
+        db: Session,
+        prior: AgentEvent,
+        user_id: str,
+        event: RuntimeEvent,
+        fingerprint: str,
+    ) -> dict[str, Any]:
+        if hmac.compare_digest(prior.request_fingerprint, fingerprint):
+            return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
+        legacy_matches = prior.kind == event.kind and hmac.compare_digest(
+            prior.request_fingerprint, AgentRuntime._legacy_fingerprint(user_id, event)
+        )
+        if event.kind == "user_message":
+            legacy_matches = legacy_matches and event.conversation_id is not None and db.scalar(
+                select(ConversationSession.id).where(
+                    ConversationSession.id == event.conversation_id,
+                    ConversationSession.user_id == user_id,
+                )
+            ) is not None
+        if not legacy_matches:
             raise IdempotencyConflict("Idempotency key already used for different input")
+        prior.request_fingerprint = fingerprint
+        db.commit()
         return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
 
     def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
@@ -81,7 +123,7 @@ class AgentRuntime:
             )
         )
         if prior:
-            return self._idempotent_result(prior, fingerprint)
+            return self._idempotent_result(db, prior, user_id, event, fingerprint)
         recorded = AgentEvent(
             user_id=user_id,
             external_id=event.external_id,
@@ -103,7 +145,7 @@ class AgentRuntime:
             )
             if prior is None:
                 raise
-            return self._idempotent_result(prior, fingerprint)
+            return self._idempotent_result(db, prior, user_id, event, fingerprint)
         logical_idempotent = False
         reflection_handled = False
         if event.kind == "user_message" and event.content and event.conversation_id:

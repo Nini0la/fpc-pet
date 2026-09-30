@@ -1,3 +1,6 @@
+import hashlib
+import importlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -5,7 +8,9 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker
 
 
 def run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -183,3 +188,174 @@ def test_conversation_invariant_migration_cycle_on_real_postgres():
     assert_conversation_constraints(database_url)
     assert run_alembic(database_url, "downgrade", "0002").returncode == 0
     assert run_alembic(database_url, "upgrade", "head").returncode == 0
+
+
+def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(monkeypatch):
+    database_url = os.getenv("POSTGRES_TEST_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+
+    assert run_alembic(database_url, "upgrade", "0002").returncode == 0
+    legacy_request = {
+        "content": "Hello from before 0003",
+        "intended_local_date": None,
+        "kind": "user_message",
+        "user_id": "legacy-user",
+    }
+    legacy_fingerprint = hashlib.sha256(
+        json.dumps(legacy_request, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, created_at, timezone) "
+                "VALUES ('legacy-user', 'owner', CURRENT_TIMESTAMP, 'UTC')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO conversation_sessions "
+                "(id, user_id, created_at, last_activity_at) VALUES "
+                "('legacy-conversation', 'legacy-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO agent_events "
+                "(id, user_id, created_at, external_id, kind, request_fingerprint, status) "
+                "VALUES ('legacy-agent-event', 'legacy-user', CURRENT_TIMESTAMP, "
+                "'legacy-http-event', 'user_message', :fingerprint, 'handled')"
+            ),
+            {"fingerprint": legacy_fingerprint},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, user_id, created_at, conversation_id, role, content, actor, ordinal) VALUES "
+                "('legacy-user-message', 'legacy-user', CURRENT_TIMESTAMP, "
+                "'legacy-conversation', 'user', 'Hello from before 0003', 'user', 1), "
+                "('legacy-assistant-message', 'legacy-user', CURRENT_TIMESTAMP, "
+                "'legacy-conversation', 'assistant', 'Hello!', 'assistant', 2)"
+            )
+        )
+    engine.dispose()
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+
+    from app.agent import AgentRuntime, IdempotencyConflict, RuntimeEvent
+
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, created_at, timezone) "
+                "VALUES ('other-user', 'other', CURRENT_TIMESTAMP, 'UTC')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO conversation_sessions "
+                "(id, user_id, created_at, last_activity_at) VALUES "
+                "('other-conversation', 'other-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+    sessions = sessionmaker(engine)
+    legacy_mismatches = [
+        RuntimeEvent(
+            "legacy-http-event",
+            "user_message",
+            "Altered content",
+            "legacy-conversation",
+        ),
+        RuntimeEvent("legacy-http-event", "dormancy_scan"),
+        RuntimeEvent(
+            "legacy-http-event",
+            "user_message",
+            "Hello from before 0003",
+            "other-conversation",
+        ),
+    ]
+    for mismatch in legacy_mismatches:
+        with sessions() as db, pytest.raises(IdempotencyConflict):
+            AgentRuntime().handle(db, "legacy-user", mismatch)
+    engine.dispose()
+
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    monkeypatch.setenv("ACCESS_CODE", "correct horse battery staple")
+    monkeypatch.setenv("SESSION_SECRET", "s" * 32)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://testserver")
+    import app.main
+
+    app.main.engine.dispose()
+    app.main = importlib.reload(app.main)
+    with TestClient(app.main.app) as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"access_code": "correct horse battery staple", "username": "owner"},
+            headers={"origin": "http://testserver"},
+        )
+        assert login.status_code == 200
+        headers = {
+            "origin": "http://testserver",
+            "x-csrf-token": client.cookies.get("csrf_token"),
+        }
+        replay = client.post(
+            "/api/chat/messages",
+            json={"event_id": "legacy-http-event", "content": "Hello from before 0003"},
+            headers=headers,
+        )
+        assert replay.status_code == 200
+        assert replay.json()["idempotent"] is True
+        assert client.post(
+            "/api/chat/messages",
+            json={"event_id": "legacy-http-event", "content": "Altered content"},
+            headers=headers,
+        ).status_code == 409
+        assert client.post(
+            "/api/events/scheduled",
+            json={"event_id": "legacy-http-event", "kind": "dormancy_scan"},
+            headers=headers,
+        ).status_code == 409
+    app.main.engine.dispose()
+
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM agent_events")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM messages")).scalar_one() == 2
+        upgraded_fingerprint = connection.execute(
+            text("SELECT request_fingerprint FROM agent_events WHERE id = 'legacy-agent-event'")
+        ).scalar_one()
+    engine.dispose()
+    assert upgraded_fingerprint.startswith("v2:")
+
+    assert run_alembic(database_url, "downgrade", "0002").returncode == 0
+    assert run_alembic(database_url, "upgrade", "head").returncode == 0
+
+    engine = create_engine(database_url)
+    sessions = sessionmaker(engine)
+    with sessions() as db, pytest.raises(IdempotencyConflict):
+        AgentRuntime().handle(
+            db,
+            "legacy-user",
+            RuntimeEvent(
+                "legacy-http-event",
+                "user_message",
+                "Hello from before 0003",
+                "other-conversation",
+            ),
+        )
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM agent_events")).scalar_one() == 1
+        assert connection.execute(text("SELECT count(*) FROM messages")).scalar_one() == 2
+        assert connection.execute(
+            text("SELECT request_fingerprint FROM agent_events WHERE id = 'legacy-agent-event'")
+        ).scalar_one() == upgraded_fingerprint
+    engine.dispose()

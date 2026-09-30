@@ -21,6 +21,7 @@ M2 was implemented in vertical RED → GREEN slices. Representative observed cyc
 | Concurrent chat authority | forced simultaneous morning/evening runs created two conversations and forced user-message runs reused ordinals | one DB-enforced conversation per user plus row-locked appends produce one chat and distinct, strictly increasing ordinals |
 | Conversation-target idempotency | the same key and payload replayed when pointed at another conversation | same-target requests replay while a retargeted key conflicts |
 | M2 concurrency migration | duplicate pre-existing conversations and ordinals survived at migration head | reversible `0003` consolidates conversations, renumbers messages, and applies both uniqueness constraints on SQLite and PostgreSQL |
+| Legacy `0002` idempotency replay | an exact pre-`0003` HTTP message replay returned 409 after migration | exact legacy canonical requests replay without duplicates, reject altered content/kind or foreign targets, and upgrade in place to target-bound v2 |
 
 Tests were written and observed failing before the corresponding runtime/UI behavior. Documentation followed the behavioral work.
 
@@ -36,12 +37,13 @@ Tests were written and observed failing before the corresponding runtime/UI beha
 - Explicit Alembic `0002` upgrade and downgrade; CI already runs the full PostgreSQL suite.
 - Race-safe conversation get-or-create, tenant-scoped row-locked message appends, DB uniqueness for one conversation per user and `(conversation_id, ordinal)`, and conversation-target-bound request fingerprints.
 - Explicit reversible Alembic `0003`, including deterministic cleanup of pre-constraint duplicate conversations/messages and a real PostgreSQL migration cycle.
+- Versioned target-bound v2 request fingerprints with narrowly bounded pre-`0003` comparison and upgrade-on-success compatibility.
 
 ## Final verification
 
-- `POSTGRES_TEST_URL=… make check` passed: backend `97 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
-- Focused migration/PostgreSQL quality suite: `24 passed`, including forced simultaneous morning/evening and user-message requests with one conversation, strictly increasing transaction-contiguous ordinals, and no HTTP 500s.
-- Real-PostgreSQL Alembic `0003` cycle succeeded: upgrade from `0002` with duplicate legacy rows, downgrade to `0002`, then upgrade to head again.
+- Full PostgreSQL-backed verification passed: backend `98 passed` against PostgreSQL 16, Ruff clean, mypy clean; frontend `6 passed`, npm audit `0 vulnerabilities`, ESLint clean, TypeScript clean, and Next.js 16.3.7 production build successful.
+- Focused migration/PostgreSQL quality suite: `25 passed`, including forced simultaneous morning/evening and user-message requests with one conversation, strictly increasing transaction-contiguous ordinals, no HTTP 500s, and exact pre-`0003` HTTP idempotency replay.
+- Real-PostgreSQL Alembic `0003` cycles succeeded for duplicate conversations and a legacy handled event; the latter replayed without duplicates, retained its upgraded v2 fingerprint through downgrade/re-upgrade, and continued rejecting retargeting.
 
 ## Known limits
 
