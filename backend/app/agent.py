@@ -5,10 +5,10 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -193,6 +193,7 @@ class AgentRuntime:
         reflection_handled = False
         vocabulary_handled = False
         vocabulary_reply: str | None = None
+        vocabulary_reason: str | None = None
         surfaced = 0
         transition_reply: str | None = None
         if event.kind == "user_message" and event.content and event.conversation_id:
@@ -224,7 +225,7 @@ class AgentRuntime:
                     )
             else:
                 vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
-                    db, user_id, event.content, self.clock.now()
+                    db, user_id, recorded.id, event.content, self.clock.now()
                 )
                 review_words = event.content.strip().split()
                 if (
@@ -242,18 +243,26 @@ class AgentRuntime:
                     )
                     vocabulary_handled = vocabulary_reply is not None
                 if not vocabulary_handled:
-                    reusable = db.scalar(
+                    reusable_items = db.scalars(
                         select(VocabularyItem)
                         .where(
                             VocabularyItem.user_id == user_id,
                             VocabularyItem.deleted.is_(False),
+                            or_(
+                                VocabularyItem.mastery_state.in_(("familiar", "mastered")),
+                                VocabularyItem.last_reviewed_at
+                                >= self.clock.now() - timedelta(days=30),
+                            ),
                         )
-                        .order_by(VocabularyItem.last_reviewed_at.desc().nullslast())
-                    )
-                    if reusable is not None:
-                        vocabulary_reply = self.vocabulary.contextual_reuse(
-                            event.content, reusable
+                        .order_by(
+                            VocabularyItem.last_reviewed_at.desc().nullslast(),
+                            VocabularyItem.id,
                         )
+                    ).all()
+                    for reusable in reusable_items:
+                        vocabulary_reply = self.vocabulary.contextual_reuse(event.content, reusable)
+                        if vocabulary_reply is not None:
+                            break
             recalling_history = self.history.matches(event.content)
             episode_actor = self.history.actor_for(event.content)
             if not recalling_history and episode_actor is not None:
@@ -565,6 +574,8 @@ class AgentRuntime:
             logical_idempotent = self.vocabulary.prompt(
                 db, user_id, recorded.id, self.clock.now()
             ) is None
+            if logical_idempotent:
+                vocabulary_reason = "no vocabulary review is due"
         db.add(
             SkillRun(
                 user_id=user_id,
@@ -595,4 +606,5 @@ class AgentRuntime:
             "idempotent": logical_idempotent,
             "handled_by": "AgentRuntime.handle",
             **({"surfaced": surfaced} if event.kind == "commitment_check" else {}),
+            **({"reason": vocabulary_reason} if vocabulary_reason else {}),
         }

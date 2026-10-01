@@ -15,12 +15,13 @@ M4 was implemented in vertical RED → GREEN slices. Representative observed fai
 | Migration | `reminders` table absent at Alembic head; M3-only states violated the restored M2 constraint on downgrade | explicit reversible `0004` backfills `last_touched_at`, applies the documented loss-aware state mapping, and passes real-data PostgreSQL downgrade/re-upgrade |
 | Concurrency | no M3 race coverage | real PostgreSQL proves one reminder under concurrent scans and suppression when completion wins the row-lock race |
 | M3 quality/security closure | unknown effort gained slack; fixed oldest-100 scans starved later rows; demonstrative/DST/effort bounds and tenant relationship enforcement were incomplete; scan/completion lock order could deadlock | unknown effort remains unknown, persistent keyset scanning is bounded and fair, all bounded demonstrative variants use unique surfaced resolution, wall times are fold/gap-safe, effort is bounded before conversion, conversation-first locking is race-tested, and composite tenant FKs reject cross-owner Reminder links |
+| M4 specification closure | early ordinary reviews created attempts; graded mistakes could not be corrected; raw latest-item substring reuse mishandled negation; concurrent due mornings incremented exposure twice | due-time gating with explicit revisit intent, 24-hour idempotent correction with preserved answer/provenance, clause-aware all-eligible reuse, and a forced PostgreSQL race proving one daily exposure increment |
 
 Tests were written and observed failing before their corresponding behavior. Documentation followed behavioral implementation.
 
 ## Delivered
 
-- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic review intervals/mastery, sentence retention, ambiguous-answer clarification, explicit self-correction, and weak-due priority.
+- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic due-gated review intervals/mastery, sentence retention, ambiguous-answer clarification, bounded idempotent correction of incorrect/ambiguous attempts with audit provenance, and weak-due priority.
 - One structured morning vocabulary slot inside the existing briefing/message and a post-reflection active-recall prompt in the same chat, all through `AgentRuntime` with event/skill/provenance records and local-date idempotency.
 - Bounded tenant vocabulary/history APIs, CAS correction, content-scrubbing deletion tombstones, Today rendering, and reversible composite-tenant-safe Alembic `0006`.
 
@@ -37,10 +38,10 @@ Tests were written and observed failing before their corresponding behavior. Doc
 
 ## Verification
 
-- Full PostgreSQL-enabled backend run: `165 passed` in 696.62s, zero skips.
-- Focused final concurrency/migration run: `3 passed`, covering parallel morning vocabulary idempotency plus SQLite and real-PostgreSQL migration cycles.
+- Full PostgreSQL-enabled backend run: `172 passed` in 732.18s, zero skips; the final matcher-case expansion then passed its current focused `16`-test M4 file.
+- Focused final concurrency/migration run: `4 passed`, covering ordinary and forced due-morning vocabulary idempotency, same-chat daily concurrency, and the reversible vocabulary migration.
 - Ruff and mypy pass. Frontend `7 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
 
 ## Known limits
 
-Vocabulary grading is deliberately conservative exact normalized matching, not semantic evaluation; ambiguous prose requires clarification or explicit self-correction. Contextual reuse is limited to a deterministic `inchoate` template for explicit “early draft”, “not fully formed”, or “rough idea” contexts. The curated lexicon is intentionally small and versioned in source. Full Today/History navigation polish remains M5, external job orchestration remains deployment-owned, and the deterministic model adapter remains development/test-only.
+Vocabulary grading is deliberately conservative exact normalized matching, not semantic evaluation; ambiguous prose requires clarification or explicit self-correction. Contextual reuse is limited to one optional deterministic `inchoate` template for an allowlist of affirmative “still an early draft/rough idea” or “not fully formed” clauses; negated and contrast clauses are excluded. The curated lexicon is intentionally small and versioned in source. Full Today/History navigation polish remains M5, external job orchestration remains deployment-owned, and the deterministic model adapter remains development/test-only.

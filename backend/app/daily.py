@@ -105,6 +105,7 @@ class MorningBriefingSkill:
     ) -> bool:
         from .models import (
             Commitment,
+            ConversationSession,
             DailyBriefing,
             Episode,
             JournalEntry,
@@ -117,6 +118,18 @@ class MorningBriefingSkill:
         if user is None:
             raise ValueError("Unknown user")
         local_date = intended_local_date or local_date_for(now, user.timezone)
+        conversation = get_or_create_conversation(db, user_id, created_at=now)
+        locked_conversation = db.scalar(
+            select(ConversationSession)
+            .where(
+                ConversationSession.id == conversation.id,
+                ConversationSession.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if locked_conversation is None:
+            raise ValueError("Unknown conversation")
+        conversation = locked_conversation
         existing = db.scalar(
             select(DailyBriefing).where(
                 DailyBriefing.user_id == user_id,
@@ -283,7 +296,6 @@ class MorningBriefingSkill:
             db.expire_all()
             return False
 
-        conversation = get_or_create_conversation(db, user_id, created_at=now)
         message = append_message(
             db,
             user_id=user_id,

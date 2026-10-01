@@ -16,6 +16,7 @@ POLICY_VERSION = "vocab-v1"
 SOURCE = "continuity-curated-lexicon"
 SOURCE_VERSION = "2026-10-01"
 MAX_ANSWER = 1000
+CORRECTION_WINDOW = timedelta(hours=24)
 LEXICON = (
     (
         "inchoate",
@@ -178,7 +179,13 @@ class VocabularyLearningSkill:
         if target_word:
             conditions.append(VocabularyItem.normalized_word == normalize(target_word))
         else:
-            conditions.append(VocabularyItem.mastery_state != "mastered")
+            conditions.extend(
+                [
+                    VocabularyItem.mastery_state != "mastered",
+                    VocabularyItem.next_review_at.is_not(None),
+                    VocabularyItem.next_review_at <= now,
+                ]
+            )
         item = db.scalar(
             select(VocabularyItem)
             .where(*conditions)
@@ -229,25 +236,37 @@ class VocabularyLearningSkill:
         return text
 
     def capture_if_pending(
-        self, db: Session, user_id: str, content: str, now: datetime
+        self, db: Session, user_id: str, event_id: str, content: str, now: datetime
     ) -> tuple[bool, str | None]:
-        normalized_content = normalize(content)
-        explicit_correction = normalized_content.startswith(
-            ("self correction ", "self-correction ", "correction ")
-        )
-        pending_conditions = [VocabularyAttempt.user_answer.is_(None)]
+        explicit_correction = re.match(r"^\s*self[- ]correction\s*:\s*", content, re.I)
         if explicit_correction:
-            pending_conditions.append(VocabularyAttempt.correct.is_(None))
-        attempt = db.scalar(
-            select(VocabularyAttempt)
-            .where(
-                VocabularyAttempt.user_id == user_id,
-                or_(*pending_conditions),
+            attempt = db.scalar(
+                select(VocabularyAttempt)
+                .where(
+                    VocabularyAttempt.user_id == user_id,
+                    VocabularyAttempt.user_answer.is_not(None),
+                    or_(
+                        VocabularyAttempt.correct.is_(False),
+                        VocabularyAttempt.correct.is_(None),
+                    ),
+                    VocabularyAttempt.reviewed_at >= now - CORRECTION_WINDOW,
+                )
+                .order_by(VocabularyAttempt.reviewed_at.desc(), VocabularyAttempt.id.desc())
+                .with_for_update()
             )
-            .order_by(VocabularyAttempt.created_at.desc(), VocabularyAttempt.id.desc())
-            .with_for_update()
-        )
+        else:
+            attempt = db.scalar(
+                select(VocabularyAttempt)
+                .where(
+                    VocabularyAttempt.user_id == user_id,
+                    VocabularyAttempt.user_answer.is_(None),
+                )
+                .order_by(VocabularyAttempt.created_at.desc(), VocabularyAttempt.id.desc())
+                .with_for_update()
+            )
         if attempt is None:
+            if explicit_correction:
+                return True, "I couldn’t find a recent vocabulary attempt to correct."
             return False, None
         item = db.scalar(
             select(VocabularyItem).where(
@@ -264,11 +283,8 @@ class VocabularyLearningSkill:
         answer = bounded[: sentence_match.start()].strip(" .;") if sentence_match else bounded
         normalized = normalize(answer)
         expected = normalize(item.definition)
-        correction = normalized.startswith(
-            ("correction ", "self correction ", "self-correction ")
-        )
-        if correction:
-            normalized = re.sub(r"^(?:self[- ]+)?correction\s+", "", normalized)
+        if explicit_correction:
+            normalized = normalize(answer[explicit_correction.end() :])
         correct: bool | None
         if normalized == expected:
             correct = True
@@ -276,12 +292,20 @@ class VocabularyLearningSkill:
             correct = False
         else:
             correct = None
-        attempt.user_answer = bounded
+        previous_grade = attempt.correct
+        if not explicit_correction:
+            attempt.user_answer = bounded
+            attempt.user_sentence = sentence
+            attempt.reviewed_at = now
+        if explicit_correction and correct is not True:
+            return True, (
+                "I’m not certain enough to apply that correction. "
+                f"Use “self-correction: {item.definition}”."
+            )
         attempt.correct = correct
-        attempt.user_sentence = sentence
-        attempt.reviewed_at = now
         if correct is not None:
-            item.recall_attempts += 1
+            if not explicit_correction or previous_grade is None:
+                item.recall_attempts += 1
             if correct:
                 item.correct_recalls += 1
                 if item.correct_recalls >= 4:
@@ -299,6 +323,19 @@ class VocabularyLearningSkill:
             item.last_reviewed_at = now
             item.updated_at = now
             item.version += 1
+        if explicit_correction:
+            db.add(
+                ProvenanceLink(
+                    user_id=user_id,
+                    target_id=attempt.id,
+                    source_type="agent_event",
+                    source_id=event_id,
+                    confidence=1.0,
+                    derivation="explicit-vocabulary-correction-v1",
+                    metadata_only=True,
+                    created_at=now,
+                )
+            )
         if sentence:
             item.user_sentences = [*item.user_sentences, sentence][-20:]
         if correct is True:
@@ -314,9 +351,25 @@ class VocabularyLearningSkill:
 
     @staticmethod
     def contextual_reuse(text: str, item: VocabularyItem) -> str | None:
-        normalized = normalize(text)
-        if item.normalized_word == "inchoate" and any(
-            phrase in normalized for phrase in ("early draft", "not fully formed", "rough idea")
-        ):
-            return "That sounds inchoate — still only partly formed."
+        if item.normalized_word != "inchoate":
+            return None
+        clauses = re.split(r"[,.;!?]|\b(?:but|however|although|whereas)\b", text, flags=re.I)
+        for raw_clause in clauses:
+            clause = normalize(raw_clause)
+            if not clause:
+                continue
+            negative_or_contrast = (
+                clause.startswith("unlike ")
+                or re.search(r"\bnot (?:a |an )?(?:rough idea|early draft)\b", clause)
+                or re.search(r"\b(?:rough idea|early draft)\b.*\b(?:anymore|no longer)\b", clause)
+                or re.search(r"\bnot fully formed\b.*\banymore\b", clause)
+                or re.search(r"\b(?:now|already) fully formed\b", clause)
+            )
+            if negative_or_contrast:
+                continue
+            if re.search(
+                r"\bstill (?:a |an )?(?:early draft|rough idea)\b|\bnot fully formed\b",
+                clause,
+            ):
+                return "That sounds inchoate — still only partly formed."
         return None

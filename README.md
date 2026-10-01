@@ -6,8 +6,8 @@ A narrow personal-AI prototype that carries explicit commitments, threads, share
 
 - A tenant-owned longitudinal vocabulary record and attempt history, backed by a versioned curated lexicon beginning with **inchoate**. Definitions and examples are source data, never model inventions.
 - The deterministic `VocabularyLearningSkill` uses the same `AgentRuntime.handle` path as chat and scheduled events. Morning briefings contain one structured learning slot: the weakest due word wins; a new word appears only when no weak word is due.
-- Evening reflection remains conversational, then asks one active-recall question in the same chat. Exact normalized MVP grading supports explicit self-correction, optional sentence retention, and leaves ambiguous prose ungraded.
-- An inspectable schedule advances correct recalls through new → developing → familiar → mastered, regresses incorrect recalls to developing, exposes the next review/reason, and retires mastered words from automatic deliberate review.
+- Evening reflection remains conversational, then asks a due active-recall question in the same chat. Exact normalized MVP grading supports bounded, audit-linked explicit self-correction of an ambiguous or incorrect latest attempt, optional sentence retention, and leaves ambiguous prose ungraded.
+- An inspectable schedule advances correct recalls through new → developing → familiar → mastered, regresses incorrect recalls to developing, enforces the injected due instant for ordinary reviews, exposes the next review/reason, and retires mastered words from automatic deliberate review. `review <word>` is the explicit revisit override.
 - `/api/vocabulary` and per-item attempts provide bounded tenant-scoped history; versioned correction and deletion immediately affect selection. Deletion scrubs vocabulary/attempt content and retains only metadata-only audit provenance.
 - Today renders the current Word of the Day or due review. Alembic `0006` is reversible and enforces composite tenant ownership for attempts.
 

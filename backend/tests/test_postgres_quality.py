@@ -311,6 +311,75 @@ def test_concurrent_morning_triggers_create_one_logical_briefing(pg_sessions):
         assert "Power List" in proactive[0].content
 
 
+def test_forced_concurrent_due_mornings_increment_vocabulary_exposure_once(pg_sessions):
+    user_id, _ = seed_runtime(pg_sessions)
+    first_clock = FakeClock(datetime(2026, 9, 30, 8, tzinfo=timezone.utc))
+    with pg_sessions() as db:
+        AgentRuntime(clock=first_clock).handle(
+            db, user_id, RuntimeEvent("prior-morning", "morning_briefing")
+        )
+
+    locker = pg_sessions()
+    pids: Queue[int] = Queue()
+    try:
+        item = locker.scalar(
+            select(VocabularyItem)
+            .where(VocabularyItem.user_id == user_id)
+            .with_for_update()
+        )
+        assert item is not None and item.exposure_count == 1
+        clock = FakeClock(datetime(2026, 10, 1, 8, tzinfo=timezone.utc))
+        rendezvous = Barrier(3)
+
+        def handle(event_id: str):
+            with pg_sessions() as db:
+                pids.put(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
+                rendezvous.wait(timeout=10)
+                return AgentRuntime(clock=clock).handle(
+                    db, user_id, RuntimeEvent(event_id, "morning_briefing")
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(handle, "due-am-1"), pool.submit(handle, "due-am-2")]
+            rendezvous.wait(timeout=10)
+            worker_pids = [pids.get(timeout=10), pids.get(timeout=10)]
+            deadline = time.monotonic() + 10
+            waiting = 0
+            while time.monotonic() < deadline:
+                with pg_sessions() as observer:
+                    waiting = observer.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE pid = ANY(:pids) AND wait_event_type = 'Lock'"
+                        ),
+                        {"pids": worker_pids},
+                    ).scalar_one()
+                if waiting == 2:
+                    break
+                time.sleep(0.01)
+            assert waiting == 2, "both morning workers did not reach the forced lock race"
+            locker.commit()
+            results = [future.result(timeout=10) for future in futures]
+    finally:
+        locker.close()
+
+    assert sorted(result["idempotent"] for result in results) == [False, True]
+    with pg_sessions() as db:
+        item = db.scalar(select(VocabularyItem).where(VocabularyItem.user_id == user_id))
+        assert item.exposure_count == 2
+        assert db.scalar(
+            select(func.count()).select_from(DailyBriefing).where(
+                DailyBriefing.user_id == user_id
+            )
+        ) == 2
+        assert db.scalar(
+            select(func.count()).select_from(Message).where(
+                Message.user_id == user_id,
+                Message.role == "assistant",
+            )
+        ) == 2
+
+
 def test_simultaneous_morning_and_evening_share_one_ordered_conversation(pg_sessions):
     with pg_sessions.begin() as db:
         user = User(username="daily-race-owner", timezone="UTC")
