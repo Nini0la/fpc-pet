@@ -1186,6 +1186,141 @@ def test_today_caps_150_open_commitments_and_active_threads_with_stable_metadata
     }
 
 
+def test_primary_collections_are_keyset_bounded_without_duplicates(client):
+    from sqlalchemy import select
+
+    import app.main
+    from app.models import Commitment, ConversationSession, Episode, Message, Thread, User
+
+    assert login(client).status_code == 200
+    now = datetime(2026, 10, 1, 8, tzinfo=timezone.utc)
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        for index in range(151):
+            created = now + timedelta(seconds=index)
+            db.add_all(
+                [
+                    Message(
+                        user_id=user.id,
+                        conversation_id=conversation.id,
+                        role="user",
+                        actor="user",
+                        content=f"message {index}",
+                        ordinal=index + 1,
+                        created_at=created,
+                    ),
+                    Thread(
+                        user_id=user.id,
+                        title=f"thread {index}",
+                        confidence=1,
+                        derivation="test",
+                        created_at=created,
+                    ),
+                    Commitment(
+                        user_id=user.id,
+                        title=f"commitment {index}",
+                        confidence=1,
+                        derivation="test",
+                        created_at=created,
+                    ),
+                    Episode(
+                        user_id=user.id,
+                        summary=f"pagination evidence {index}",
+                        actor="user",
+                        created_at=created,
+                    ),
+                ]
+            )
+    for path in ("/api/chat/messages", "/api/threads", "/api/commitments"):
+        ids: list[str] = []
+        cursor = None
+        while True:
+            response = client.get(
+                path, params={"limit": 37, **({"cursor": cursor} if cursor else {})}
+            )
+            assert response.status_code == 200
+            ids.extend(item["id"] for item in response.json())
+            if response.headers["x-has-more"] == "false":
+                break
+            cursor = response.headers["x-next-cursor"]
+        assert len(ids) == len(set(ids)) == 151
+    ids = []
+    cursor = None
+    while True:
+        response = client.get(
+            "/api/history/recall",
+            params={
+                "q": "pagination evidence",
+                "limit": 37,
+                **({"cursor": cursor} if cursor else {}),
+            },
+        )
+        ids.extend(item["id"] for item in response.json())
+        if response.headers["x-has-more"] == "false":
+            break
+        cursor = response.headers["x-next-cursor"]
+    assert len(ids) == len(set(ids)) == 151
+    assert client.get("/api/threads", params={"limit": 101}).status_code == 422
+    assert client.get("/api/threads", params={"cursor": "bad"}).status_code == 422
+
+
+def test_journal_memory_control_is_cas_tenant_scoped_and_content_free(client):
+    from sqlalchemy import select
+
+    import app.main
+    from app.models import JournalEntry, User
+
+    assert login(client, username="journal-owner").status_code == 200
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "journal-owner"))
+        entry = JournalEntry(
+            user_id=user.id,
+            local_date=datetime(2026, 10, 1).date(),
+            original_content="Verbatim reflection",
+            source_message_id="source-message",
+            source_event_id="source-event",
+        )
+        db.add(entry)
+        db.flush()
+        entry_id = entry.id
+    corrected = client.patch(
+        f"/api/history/journals/{entry_id}",
+        json={"content": "  Corrected reflection  ", "version": 1},
+        headers=csrf(client),
+    )
+    assert corrected.status_code == 200
+    assert corrected.json()["corrected_content"] == "Corrected reflection"
+    with app.main.SessionLocal() as db:
+        assert db.get(JournalEntry, entry_id).original_content == "Verbatim reflection"
+    assert (
+        client.patch(
+            f"/api/history/journals/{entry_id}",
+            json={"content": "stale", "version": 1},
+            headers=csrf(client),
+        ).status_code
+        == 409
+    )
+    assert login(client, username="other-journal-owner").status_code == 200
+    assert client.get(f"/api/history/journals/{entry_id}").status_code == 404
+    assert login(client, username="journal-owner").status_code == 200
+    assert (
+        client.delete(
+            f"/api/history/journals/{entry_id}",
+            params={"version": 2},
+            headers=csrf(client),
+        ).status_code
+        == 204
+    )
+    with app.main.SessionLocal() as db:
+        deleted = db.get(JournalEntry, entry_id)
+        assert deleted.deleted is True
+        assert deleted.original_content == "[deleted]"
+        assert deleted.corrected_content is None
+
+
 def test_missed_scheduled_trigger_uses_validated_intended_date_and_is_logically_idempotent(
     client,
 ):

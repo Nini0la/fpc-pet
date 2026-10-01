@@ -272,6 +272,7 @@ class JournalEntry(Owned, Base):
     __tablename__ = "journal_entries"
     local_date: Mapped[date] = mapped_column(Date)
     original_content: Mapped[str] = mapped_column(Text)
+    corrected_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     structured_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     source_message_id: Mapped[str] = mapped_column(ForeignKey("messages.id"))
@@ -279,6 +280,8 @@ class JournalEntry(Owned, Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (
         UniqueConstraint("user_id", "local_date", name="uq_journal_entries_user_date"),
     )

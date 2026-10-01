@@ -16,7 +16,9 @@
 3. In **Chat**, send an explicit commitment and an exploratory idea. Reload to verify chronology persists.
 4. Open **Today** to inspect briefing reasons, urgency, vocabulary, resurfacing, and reflection state. Trigger only the offered morning/evening action; repeated requests are server-idempotent.
 5. Open **Threads**, filter by state, inspect source metadata, edit fields, and save. A stale version displays a conflict instead of overwriting newer state.
-6. Open **History**, search the bounded timeline, inspect actor/source, and delete an editable memory through confirmation.
+6. Open **History**, search the bounded timeline, inspect actor/source, and correct or
+   delete an editable memory through confirmation. Journal-memory deletion does not
+   delete its separately retained raw chat source.
 7. At 320px/390px widths, verify the primary nav is fixed at the bottom; at desktop widths it is a side rail. Keyboard through the skip link, navigation, forms, dialogs, and composer.
 
 ## Verification
@@ -31,5 +33,11 @@
 - HTTP 401: sign in again; never persist or reconstruct the session token client-side.
 - HTTP 409: refetch the record and reapply the user’s intended edit; do not blind-retry stale CAS writes.
 - HTTP 422: correct bounded text, time, timezone, state, or pagination input.
-- Network/5xx: use the visible retry control. Optimistic chat content is removed and can be retried; the server event id prevents duplicate accepted sends.
+- Network/5xx: use the visible retry control. A pending chat send keeps the same event ID.
+  If POST succeeded but history refresh failed, retry reconciles history first; otherwise
+  replay of the same ID is server-idempotent.
+- Bounded collection responses expose `X-Has-More` and an opaque `X-Next-Cursor`.
+  Continue with that cursor and never construct or edit it client-side.
+- The PostgreSQL migration suite destroys and recreates the configured test database's
+  `public` schema; only point `POSTGRES_TEST_URL` at a disposable database.
 - Before deleting data, explain that visible content is scrubbed/tombstoned while metadata-only audit rows and backups may remain under operator retention.

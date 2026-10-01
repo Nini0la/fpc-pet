@@ -11,8 +11,15 @@
 - Reminder uniqueness binds tenant, server-selected commitment, relevance window, and policy version. Model/user payloads never select ownership IDs. A commitment row is locked and refreshed immediately before surfacing; completion/cancellation/deletion suppresses output. Reminder audit metadata stores only policy factors and IDs, never raw source messages or secrets.
 - User-local dates use a server-stored IANA timezone, a timezone-aware injected clock, and `zoneinfo`; clients cannot assert the authoritative user or local date. Invalid/unconfigured users default to `UTC` at creation.
 - API text and identifiers are bounded. SQLAlchemy parameterizes queries. Errors are generic. React renders all content as escaped text, uses no `dangerouslySetInnerHTML`, accepts no user-authored destination URLs, and stores no auth token in localStorage.
-- Corrections use tenant-scoped versioned compare-and-swap and content-free audit metadata. Deletion tombstones/overwrites primary mutable state and filters recall. Backups may retain deleted or journal data until rotated.
+- Corrections use tenant-scoped versioned compare-and-swap and content-free audit metadata.
+  Journal correction preserves the verbatim original in `original_content` and stores the
+  user-visible correction separately. Deletion scrubs retained journal content and leaves
+  only a content-free tombstone. Raw chat is retained separately: deleting a derived memory
+  does not delete the source transcript. Backups remain subject to operator rotation.
 - Vocabulary answers are bounded to 1,000 characters and sentences to 500. Attempts store visible prompts/answers only, never hidden reasoning. Vocabulary deletion scrubs the word, definition, example, sentences, prompts, and answers while retaining a content-free metadata audit tombstone; database backups remain subject to operator retention.
 - This is an original narrow continuity prototype; it does not expose, implement, or claim proprietary FPC internals.
 
-Known M5 limits: one shared environment access code, no rate limiter, no field encryption, no key-rotation UI, literal SQL substring search, conservative rather than comprehensive DLP, and no production model provider. Journal correction/deletion is intentionally not exposed because journal rows are not yet versioned; Episodes, Threads, Commitments, and vocabulary retain confirmed CAS deletion. Put production behind TLS and a trusted reverse proxy.
+Known M5 limits: one shared environment access code, no rate limiter, no field encryption,
+no key-rotation UI, literal SQL substring search, conservative rather than comprehensive
+DLP, and no production model provider. Put production behind TLS and a trusted reverse
+proxy.

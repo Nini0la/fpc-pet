@@ -54,6 +54,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # M4 cannot represent the richer M5 lifecycle. Map every valid M5 state
+    # deterministically before restoring its constraint: work still in motion
+    # remains active, while completed work becomes dormant (rather than being
+    # misrepresented as abandoned). This is intentionally lossy and documented.
+    op.execute(
+        "UPDATE threads SET state = CASE "
+        "WHEN state IN ('exploring', 'waiting') THEN 'active' "
+        "WHEN state = 'completed' THEN 'dormant' ELSE state END"
+    )
     with op.batch_alter_table("threads") as batch:
         batch.drop_constraint("ck_threads_importance", type_="check")
         batch.drop_constraint("ck_threads_state_m5", type_="check")

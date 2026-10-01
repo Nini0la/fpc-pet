@@ -8,7 +8,14 @@
 - Today presents only API-backed briefing, reason-bearing Power List, bounded urgent commitments, vocabulary state, resurfaced items, and reflection state. Morning/evening controls use the existing authorized idempotent event API.
 - Threads filters active/exploring/waiting/dormant/completed/abandoned state and edits trimmed description, state, importance, deadline, next action, and watch fields using versioned CAS. Stale writes surface as conflicts.
 - History provides a bounded/searchable tenant timeline of Episodes, journals, Threads, Commitments, observable AgentEvent metadata, vocabulary, and assistant messages. Actor attribution, provenance lookup, confirmation, and CAS deletion are visible; deleted records remain excluded.
-- Reversible Alembic `0007`, backend isolation/bounds/CAS tests, and frontend loading/error/navigation/correction/confirmation/accessibility-name tests accompany the feature.
+- Reversible Alembic `0007` maps `exploring`/`waiting` to `active` and `completed` to
+  `dormant` before restoring the M4 constraint. `0008` adds versioned journal controls.
+- Chat retries preserve one event ID through uncertain delivery and reconcile accepted
+  sends before replay. Collection reads are bounded and expose opaque keyset cursors.
+- Timeline source projections are ordered before a global merge; event and assistant
+  metadata participate in search, and actors come from record provenance semantics.
+- Reusable dialogs trap Tab, close on Escape when allowed, focus their first control, and
+  restore opener focus.
 
 ## TDD evidence
 
@@ -23,9 +30,15 @@ Production still fails closed without database URL, access code, 32+ character s
 - No live Nebius/Nemotron provider is claimed; deterministic mode remains development/test only.
 - No M6 discovery, Jev, calendar, or external integrations were added.
 - Backend chat is request/response, so the UI truthfully shows pending state rather than fake token streaming.
-- Journal rows are visible/searchable but are not editable/deletable until they have a versioned correction model.
+- Journal correction preserves the verbatim original while displaying corrected content;
+  CAS deletion scrubs retained journal content to a content-free tombstone. Raw chat is a
+  separate retention surface.
 - Browser screenshots were not fabricated or added. Final visual dogfood is expected from the parent environment.
 
 ## Verification
 
-See the final commit report and `docs/RUNBOOK.md` for exact commands and observed totals. The required gate is backend pytest/Ruff/mypy plus frontend audit/lint/typecheck/tests/build; the PostgreSQL subset requires `POSTGRES_TEST_URL` and must report zero skips when the service is available.
+See `docs/RUNBOOK.md` for commands. Final verification on the disposable PostgreSQL 16
+service at port 55432 completed with **192 passed, zero skipped**; this includes the
+populated 0007 down/up cycle plus migration, race, API, pagination, and tenant-isolation
+coverage. Ruff and mypy passed. Frontend verification completed with **15 passed**, zero
+high-severity audit findings, clean ESLint/TypeScript, and a successful production build.

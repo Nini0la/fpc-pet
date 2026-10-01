@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import os
 import secrets
 from datetime import date, datetime, timedelta
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, NoReturn, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, func, or_, select, update
+from sqlalchemy import and_, create_engine, func, or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
@@ -78,6 +80,47 @@ runtime = AgentRuntime()
 TODAY_COLLECTION_LIMIT = 50
 SCHEDULE_CATCHUP_DAYS = 1
 RETRYABLE_SQLSTATES = {"40001", "40P01", "55P03"}
+PAGE_LIMIT = 50
+
+
+def encode_cursor(created_at: datetime, id: str) -> str:
+    raw = json.dumps([created_at.isoformat(), id], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    if cursor is None:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        value = json.loads(raw)
+        if not isinstance(value, list) or len(value) != 2:
+            raise ValueError
+        return datetime.fromisoformat(value[0]), str(value[1])
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(422, "Invalid cursor") from error
+
+
+def page_headers(response: Response, rows: Sequence[Any], limit: int) -> Sequence[Any]:
+    page = rows[:limit]
+    more = len(rows) > limit
+    response.headers["X-Has-More"] = str(more).lower()
+    if more and page:
+        response.headers["X-Next-Cursor"] = encode_cursor(page[-1].created_at, page[-1].id)
+    return page
+
+
+def decode_chat_cursor(cursor: str | None) -> tuple[int, str] | None:
+    if cursor is None:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        value = json.loads(raw)
+        if not isinstance(value, list) or len(value) != 2:
+            raise ValueError
+        return int(value[0]), str(value[1])
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise HTTPException(422, "Invalid cursor") from error
 
 
 def digest(value: str) -> str:
@@ -285,12 +328,23 @@ def send_message(
 
 
 @app.get("/api/chat/messages")
-def messages(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
-    rows = db.scalars(
-        select(Message)
-        .where(Message.user_id == user.id)
-        .order_by(Message.ordinal, Message.created_at, Message.id)
-    ).all()
+def messages(
+    response: Response,
+    limit: int = Query(default=PAGE_LIMIT, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=500),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    after = decode_chat_cursor(cursor)
+    statement = select(Message).where(Message.user_id == user.id)
+    if after:
+        statement = statement.where(
+            or_(
+                Message.ordinal > after[0],
+                and_(Message.ordinal == after[0], Message.id > after[1]),
+            )
+        )
+    rows = db.scalars(statement.order_by(Message.ordinal, Message.id).limit(limit + 1)).all()
     proactive_ids = {
         message_id
         for message_id in (
@@ -306,6 +360,11 @@ def messages(db: DBSession = Depends(db_session), user: User = Depends(current_u
         )
         if message_id is not None
     }
+    page = rows[:limit]
+    response.headers["X-Has-More"] = str(len(rows) > limit).lower()
+    if len(rows) > limit and page:
+        raw = json.dumps([page[-1].ordinal, page[-1].id], separators=(",", ":")).encode()
+        response.headers["X-Next-Cursor"] = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     return [
         {
             "id": item.id,
@@ -314,7 +373,7 @@ def messages(db: DBSession = Depends(db_session), user: User = Depends(current_u
             "created_at": item.created_at,
             "proactive": item.id in proactive_ids,
         }
-        for item in rows
+        for item in page
     ]
 
 
@@ -338,23 +397,49 @@ def commitment_dict(item: Commitment) -> dict[str, Any]:
 
 
 @app.get("/api/threads")
-def threads(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
-    return [
-        item_dict(x)
-        for x in db.scalars(
-            select(Thread).where(Thread.user_id == user.id, Thread.deleted.is_(False))
-        ).all()
-    ]
+def threads(
+    response: Response,
+    limit: int = Query(default=PAGE_LIMIT, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=500),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    after = decode_cursor(cursor)
+    statement = select(Thread).where(Thread.user_id == user.id, Thread.deleted.is_(False))
+    if after:
+        statement = statement.where(
+            or_(
+                Thread.created_at > after[0],
+                and_(Thread.created_at == after[0], Thread.id > after[1]),
+            )
+        )
+    rows = db.scalars(statement.order_by(Thread.created_at, Thread.id).limit(limit + 1)).all()
+    return [item_dict(x) for x in page_headers(response, rows, limit)]
 
 
 @app.get("/api/commitments")
-def commitments(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
-    return [
-        item_dict(x)
-        for x in db.scalars(
-            select(Commitment).where(Commitment.user_id == user.id, Commitment.deleted.is_(False))
-        ).all()
-    ]
+def commitments(
+    response: Response,
+    limit: int = Query(default=PAGE_LIMIT, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=500),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    after = decode_cursor(cursor)
+    statement = select(Commitment).where(
+        Commitment.user_id == user.id, Commitment.deleted.is_(False)
+    )
+    if after:
+        statement = statement.where(
+            or_(
+                Commitment.created_at > after[0],
+                and_(Commitment.created_at == after[0], Commitment.id > after[1]),
+            )
+        )
+    rows = db.scalars(
+        statement.order_by(Commitment.created_at, Commitment.id).limit(limit + 1)
+    ).all()
+    return [item_dict(x) for x in page_headers(response, rows, limit)]
 
 
 def owned_thread(id: str, user: User, db: DBSession) -> Thread:
@@ -582,6 +667,16 @@ class EpisodeCorrection(BaseModel):
     version: int = Field(ge=1)
 
 
+class JournalCorrection(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+    version: int = Field(ge=1)
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def trim_content(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 @app.get("/api/episodes/{id}")
 def get_episode(id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)):
     return item_dict(owned_record(Episode, id, user, db))
@@ -633,9 +728,89 @@ def delete_episode(
     db.commit()
 
 
+@app.get("/api/history/journals/{id}")
+def get_journal(id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)):
+    return item_dict(owned_record(JournalEntry, id, user, db))
+
+
+@app.patch("/api/history/journals/{id}", dependencies=[Depends(mutation_guard)])
+def correct_journal(
+    id: str,
+    body: JournalCorrection,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    owned_record(JournalEntry, id, user, db)
+    require_mutation(
+        atomic_update(
+            db,
+            JournalEntry,
+            id,
+            user.id,
+            body.version,
+            {"corrected_content": body.content, "updated_at": runtime.clock.now()},
+        )
+    )
+    db.add(
+        ProvenanceLink(
+            user_id=user.id,
+            target_id=id,
+            source_type="correction",
+            source_id=None,
+            confidence=1.0,
+            derivation="user-journal-correction",
+            metadata_only=True,
+        )
+    )
+    db.commit()
+    return item_dict(owned_record(JournalEntry, id, user, db))
+
+
+@app.delete("/api/history/journals/{id}", status_code=204, dependencies=[Depends(mutation_guard)])
+def delete_journal(
+    id: str,
+    version: Annotated[int | None, Query(ge=1)] = None,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    item = owned_record(JournalEntry, id, user, db)
+    require_mutation(
+        atomic_update(
+            db,
+            JournalEntry,
+            id,
+            user.id,
+            version if version is not None else item.version,
+            {
+                "deleted": True,
+                "original_content": "[deleted]",
+                "corrected_content": None,
+                "summary": None,
+                "structured_state": None,
+                "updated_at": runtime.clock.now(),
+            },
+        )
+    )
+    db.add(
+        ProvenanceLink(
+            user_id=user.id,
+            target_id=id,
+            source_type="deletion_tombstone",
+            source_id=None,
+            confidence=1.0,
+            derivation="user-journal-deletion",
+            metadata_only=True,
+        )
+    )
+    db.commit()
+
+
 @app.get("/api/history/recall")
 def recall(
+    response: Response,
     q: str = Query(min_length=1, max_length=500),
+    limit: int = Query(default=PAGE_LIMIT, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=500),
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
@@ -643,11 +818,18 @@ def recall(
     condition = (
         or_(*[Episode.summary.ilike(f"%{t}%") for t in terms]) if terms else Episode.id == ""
     )
-    rows = db.scalars(
-        select(Episode)
-        .where(Episode.user_id == user.id, Episode.deleted.is_(False), condition)
-        .order_by(Episode.created_at)
-    ).all()
+    after = decode_cursor(cursor)
+    statement = select(Episode).where(
+        Episode.user_id == user.id, Episode.deleted.is_(False), condition
+    )
+    if after:
+        statement = statement.where(
+            or_(
+                Episode.created_at > after[0],
+                and_(Episode.created_at == after[0], Episode.id > after[1]),
+            )
+        )
+    rows = db.scalars(statement.order_by(Episode.created_at, Episode.id).limit(limit + 1)).all()
     return [
         {
             "id": x.id,
@@ -656,7 +838,7 @@ def recall(
             "confidence": x.confidence,
             "source": x.source,
         }
-        for x in rows
+        for x in page_headers(response, rows, limit)
     ]
 
 
@@ -780,9 +962,13 @@ def history_timeline(
     q: str | None = Query(default=None, min_length=1, max_length=500),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0, le=10_000),
+    cursor: str | None = Query(default=None, max_length=500),
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
+    before = decode_cursor(cursor)
+    if before and offset:
+        raise HTTPException(422, "cursor and offset cannot be combined")
     take = min(limit + offset + 1, 10_101)
     entries: list[dict[str, Any]] = []
 
@@ -801,7 +987,9 @@ def history_timeline(
         )
 
     episode_query = select(Episode).where(Episode.user_id == user.id, Episode.deleted.is_(False))
-    journal_query = select(JournalEntry).where(JournalEntry.user_id == user.id)
+    journal_query = select(JournalEntry).where(
+        JournalEntry.user_id == user.id, JournalEntry.deleted.is_(False)
+    )
     thread_query = select(Thread).where(Thread.user_id == user.id, Thread.deleted.is_(False))
     commitment_query = select(Commitment).where(
         Commitment.user_id == user.id, Commitment.deleted.is_(False)
@@ -809,10 +997,44 @@ def history_timeline(
     vocabulary_query = select(VocabularyItem).where(
         VocabularyItem.user_id == user.id, VocabularyItem.deleted.is_(False)
     )
+    if before:
+        episode_query = episode_query.where(
+            or_(
+                Episode.created_at < before[0],
+                and_(Episode.created_at == before[0], Episode.id < before[1]),
+            )
+        )
+        journal_query = journal_query.where(
+            or_(
+                JournalEntry.created_at < before[0],
+                and_(JournalEntry.created_at == before[0], JournalEntry.id < before[1]),
+            )
+        )
+        thread_query = thread_query.where(
+            or_(
+                Thread.created_at < before[0],
+                and_(Thread.created_at == before[0], Thread.id < before[1]),
+            )
+        )
+        commitment_query = commitment_query.where(
+            or_(
+                Commitment.created_at < before[0],
+                and_(Commitment.created_at == before[0], Commitment.id < before[1]),
+            )
+        )
+        vocabulary_query = vocabulary_query.where(
+            or_(
+                VocabularyItem.created_at < before[0],
+                and_(VocabularyItem.created_at == before[0], VocabularyItem.id < before[1]),
+            )
+        )
     if q:
         episode_query = episode_query.where(Episode.summary.icontains(q, autoescape=True))
         journal_query = journal_query.where(
-            JournalEntry.original_content.icontains(q, autoescape=True)
+            or_(
+                JournalEntry.original_content.icontains(q, autoescape=True),
+                JournalEntry.corrected_content.icontains(q, autoescape=True),
+            )
         )
         thread_query = thread_query.where(Thread.title.icontains(q, autoescape=True))
         commitment_query = commitment_query.where(Commitment.title.icontains(q, autoescape=True))
@@ -822,36 +1044,81 @@ def history_timeline(
                 VocabularyItem.definition.icontains(q, autoescape=True),
             )
         )
-    for episode in db.scalars(episode_query.limit(take)):
+    for episode in db.scalars(
+        episode_query.order_by(Episode.created_at.desc(), Episode.id.desc()).limit(take)
+    ):
         add("episode", episode, episode.summary, episode.actor, editable=True)
-    for journal in db.scalars(journal_query.limit(take)):
-        add("journal", journal, journal.original_content, "user")
-    for thread in db.scalars(thread_query.limit(take)):
-        add("thread", thread, thread.title, "joint", editable=True)
-    for commitment in db.scalars(commitment_query.limit(take)):
-        add("commitment", commitment, commitment.title, "joint", editable=True)
-    for vocabulary in db.scalars(vocabulary_query.limit(take)):
+    for journal in db.scalars(
+        journal_query.order_by(JournalEntry.created_at.desc(), JournalEntry.id.desc()).limit(take)
+    ):
+        add(
+            "journal",
+            journal,
+            journal.corrected_content or journal.original_content,
+            "user",
+            editable=True,
+        )
+    for thread in db.scalars(
+        thread_query.order_by(Thread.created_at.desc(), Thread.id.desc()).limit(take)
+    ):
+        add("thread", thread, thread.title, "user", editable=True)
+    for commitment in db.scalars(
+        commitment_query.order_by(Commitment.created_at.desc(), Commitment.id.desc()).limit(take)
+    ):
+        add("commitment", commitment, commitment.title, "user", editable=True)
+    for vocabulary in db.scalars(
+        vocabulary_query.order_by(VocabularyItem.created_at.desc(), VocabularyItem.id.desc()).limit(
+            take
+        )
+    ):
         add(
             "vocabulary",
             vocabulary,
             f"{vocabulary.display_word} — {vocabulary.definition}",
-            "joint",
+            "assistant",
             editable=True,
         )
-    if not q:
-        for event in db.scalars(
-            select(AgentEvent).where(AgentEvent.user_id == user.id).limit(take)
-        ):
-            add("agent_event", event, f"{event.kind}: {event.status}", "assistant")
-        for message in db.scalars(
-            select(Message)
-            .where(Message.user_id == user.id, Message.role == "assistant")
-            .limit(take)
-        ):
-            add("assistant_action", message, message.content, "assistant")
+    event_query = select(AgentEvent).where(AgentEvent.user_id == user.id)
+    message_query = select(Message).where(Message.user_id == user.id, Message.role == "assistant")
+    if before:
+        event_query = event_query.where(
+            or_(
+                AgentEvent.created_at < before[0],
+                and_(AgentEvent.created_at == before[0], AgentEvent.id < before[1]),
+            )
+        )
+        message_query = message_query.where(
+            or_(
+                Message.created_at < before[0],
+                and_(Message.created_at == before[0], Message.id < before[1]),
+            )
+        )
+    if q:
+        event_query = event_query.where(
+            or_(
+                AgentEvent.kind.icontains(q, autoescape=True),
+                AgentEvent.status.icontains(q, autoescape=True),
+            )
+        )
+        message_query = message_query.where(Message.content.icontains(q, autoescape=True))
+    for event in db.scalars(
+        event_query.order_by(AgentEvent.created_at.desc(), AgentEvent.id.desc()).limit(take)
+    ):
+        add("agent_event", event, f"{event.kind}: {event.status}", "assistant")
+    for message in db.scalars(
+        message_query.order_by(Message.created_at.desc(), Message.id.desc()).limit(take)
+    ):
+        add("assistant_action", message, message.content, "assistant")
     entries.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
     page = entries[offset : offset + limit]
-    return {"items": page, "has_more": len(entries) > offset + limit}
+    has_more = len(entries) > offset + limit
+    return {
+        "items": page,
+        "has_more": has_more,
+        "next_cursor": encode_cursor(page[-1]["created_at"], page[-1]["id"])
+        if has_more and page
+        else None,
+    }
 
 
 @app.get("/api/history/journals")
@@ -862,7 +1129,9 @@ def journal_history(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    statement = select(JournalEntry).where(JournalEntry.user_id == user.id)
+    statement = select(JournalEntry).where(
+        JournalEntry.user_id == user.id, JournalEntry.deleted.is_(False)
+    )
     if q:
         statement = statement.where(JournalEntry.original_content.icontains(q, autoescape=True))
     rows = db.scalars(
@@ -927,6 +1196,13 @@ class VocabularyCorrection(BaseModel):
         if not any(character.isalnum() for character in trimmed):
             raise ValueError("must contain text")
         return trimmed
+
+
+@app.get("/api/vocabulary/{id}")
+def get_vocabulary(
+    id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)
+):
+    return item_dict(owned_record(VocabularyItem, id, user, db))
 
 
 @app.patch("/api/vocabulary/{id}", dependencies=[Depends(mutation_guard)])

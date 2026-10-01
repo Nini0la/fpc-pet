@@ -115,6 +115,52 @@ def test_vocabulary_migration_is_explicit_and_reversible(tmp_path: Path):
     assert {"vocabulary_items", "vocabulary_attempts"} <= table_names(database_path)
 
 
+def test_m5_thread_states_are_loss_aware_on_real_postgres_downgrade():
+    database_url = os.getenv("POSTGRES_TEST_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+    assert run_alembic(database_url, "upgrade", "0007").returncode == 0
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id,username,created_at,timezone) VALUES "
+                "('state-user','state-owner',CURRENT_TIMESTAMP,'UTC')"
+            )
+        )
+        for state in ("exploring", "waiting", "completed"):
+            connection.execute(
+                text(
+                    "INSERT INTO threads (id,user_id,created_at,title,state,confidence,"
+                    "derivation,version,priority,deleted,description,importance,next_action,watch) "
+                    "VALUES (:id,'state-user',CURRENT_TIMESTAMP,:title,:state,1,'test',"
+                    "1,0,false,'',0,'',false)"
+                ),
+                {"id": f"thread-{state}", "title": state, "state": state},
+            )
+    engine.dispose()
+    downgraded = run_alembic(database_url, "downgrade", "0006")
+    assert downgraded.returncode == 0, downgraded.stderr
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        states = {
+            row.id: row.state
+            for row in connection.execute(text("SELECT id,state FROM threads"))
+        }
+    engine.dispose()
+    assert states == {
+        "thread-exploring": "active",
+        "thread-waiting": "active",
+        "thread-completed": "dormant",
+    }
+    assert run_alembic(database_url, "upgrade", "head").returncode == 0
+
+
 def seed_duplicate_conversations(database_url: str) -> None:
     engine = create_engine(database_url)
     with engine.begin() as connection:

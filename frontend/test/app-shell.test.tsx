@@ -74,7 +74,9 @@ describe("History correction",()=>{
   const item:TimelineItem={id:"e1",kind:"episode",content:"Shared launch",actor:"joint",created_at:"2026-10-01T08:00:00Z",version:1,editable:true,provenance_target_id:"e1"};
   it("edits a retained episode with CAS",async()=>{
     const onReload=vi.fn();
-    vi.spyOn(globalThis,"fetch").mockResolvedValue(json({...item,content:"Corrected launch",summary:"Corrected launch",version:2}));
+    vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(json({...item,content:"Corrected launch",summary:"Shared launch",version:1}))
+      .mockResolvedValueOnce(json({...item,content:"Corrected launch",summary:"Corrected launch",version:2}));
     render(<History items={[item]} onReload={onReload} onSessionExpired={()=>undefined}/>);
     fireEvent.click(screen.getByRole("button",{name:"Edit Shared launch"}));
     fireEvent.change(screen.getByLabelText("Memory text"),{target:{value:" Corrected launch "}});

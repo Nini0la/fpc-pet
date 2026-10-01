@@ -17,6 +17,22 @@ describe("Chat",()=>{
     render(<Chat/>);
     expect(screen.getByText("0 / 4000")).toBeInTheDocument();
   });
+
+  it("reconciles an accepted send without posting it twice",async()=>{
+    const fetchMock=vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(new Response("{}",{status:201,headers:{"content-type":"application/json"}}))
+      .mockResolvedValueOnce(new Response(null,{status:503}))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{id:"server",role:"user",content:"hello"}]),{status:200,headers:{"content-type":"application/json"}}));
+    render(<Chat/>);
+    fireEvent.change(screen.getByLabelText("Message"),{target:{value:"hello"}});
+    fireEvent.click(screen.getByRole("button",{name:"Send"}));
+    const retry=await screen.findByRole("button",{name:"Retry"});
+    await waitFor(()=>expect(retry).toBeEnabled());
+    fireEvent.click(retry);
+    await waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).event_id).toBeTruthy();
+  });
 });
 
 describe("Page",()=>{
@@ -38,7 +54,8 @@ describe("Page",()=>{
       }),{status:200,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify({items:[],has_more:false}),{
         status:200,headers:{"content-type":"application/json"},
-      }));
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1}),{status:200,headers:{"content-type":"application/json"}}));
 
     render(<Page/>);
     await screen.findByLabelText("Access code");
@@ -48,7 +65,7 @@ describe("Page",()=>{
     expect(await screen.findByText("Earlier question")).toBeInTheDocument();
     expect(screen.getByText("Earlier answer")).toBeInTheDocument();
     await waitFor(()=>expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5));
-    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages");
+    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages?limit=100");
     expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8000/api/today");
     expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8000/api/vocabulary?limit=20&offset=0");
   });
@@ -67,6 +84,7 @@ describe("Page",()=>{
       .mockResolvedValueOnce(new Response("[]",{status:200,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify(today),{status:200,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify({items:[],has_more:false}),{status:200,headers:{"content-type":"application/json"}}));
+    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1}),{status:200,headers:{"content-type":"application/json"}}));
 
     render(<Page/>);
 
