@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import importlib
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from queue import Queue
 from threading import Barrier
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.agent import AgentRuntime, IdempotencyConflict, RuntimeEvent
@@ -137,6 +140,85 @@ def test_atomic_soft_delete_allows_only_one_concurrent_session(
     finally:
         first.close()
         stale.close()
+
+
+@pytest.mark.parametrize(
+    "foreign_relationship",
+    ["commitment_id", "thread_id", "surfaced_message_id", "source_event_id"],
+)
+def test_reminder_relationships_reject_cross_tenant_targets(
+    pg_sessions, foreign_relationship
+):
+    with pg_sessions.begin() as db:
+        owner = User(username=f"reminder-owner-{foreign_relationship}")
+        stranger = User(username=f"reminder-stranger-{foreign_relationship}")
+        db.add_all([owner, stranger])
+        db.flush()
+        owner_conversation = ConversationSession(user_id=owner.id)
+        stranger_conversation = ConversationSession(user_id=stranger.id)
+        owner_commitment = Commitment(
+            user_id=owner.id, title="owner task", confidence=1, derivation="test"
+        )
+        stranger_commitment = Commitment(
+            user_id=stranger.id, title="stranger task", confidence=1, derivation="test"
+        )
+        stranger_thread = Thread(user_id=stranger.id, title="stranger thread", derivation="test")
+        owner_event = AgentEvent(
+            user_id=owner.id,
+            external_id="owner-event",
+            kind="commitment_check",
+            request_fingerprint="owner-fingerprint",
+        )
+        stranger_event = AgentEvent(
+            user_id=stranger.id,
+            external_id="stranger-event",
+            kind="commitment_check",
+            request_fingerprint="stranger-fingerprint",
+        )
+        db.add_all(
+            [
+                owner_conversation,
+                stranger_conversation,
+                owner_commitment,
+                stranger_commitment,
+                stranger_thread,
+                owner_event,
+                stranger_event,
+            ]
+        )
+        db.flush()
+        stranger_message = Message(
+            user_id=stranger.id,
+            conversation_id=stranger_conversation.id,
+            role="assistant",
+            actor="assistant",
+            content="foreign",
+            ordinal=1,
+        )
+        db.add(stranger_message)
+        db.flush()
+        values = {
+            "user_id": owner.id,
+            "commitment_id": owner_commitment.id,
+            "thread_id": None,
+            "surfaced_message_id": None,
+            "source_event_id": owner_event.id,
+            "policy_version": "m3-v1",
+            "relevance_window": foreign_relationship,
+            "reason_code": "test",
+            "reason_metadata": {},
+            "state": "pending",
+        }
+        values[foreign_relationship] = {
+            "commitment_id": stranger_commitment.id,
+            "thread_id": stranger_thread.id,
+            "surfaced_message_id": stranger_message.id,
+            "source_event_id": stranger_event.id,
+        }[foreign_relationship]
+
+    with pg_sessions() as db, pytest.raises(IntegrityError):
+        db.add(Reminder(**values))
+        db.commit()
 
 
 def seed_runtime(pg_sessions):
@@ -464,6 +546,28 @@ def test_postgres_create_boundaries_return_validation_not_server_errors(
     assert pg_client.post(path, json=invalid_payload, headers=headers).status_code == 422
 
 
+def test_postgres_huge_extracted_effort_is_clarified_without_integer_overflow(pg_client):
+    import app.main
+
+    assert login(pg_client).status_code == 200
+    response = pg_client.post(
+        "/api/chat/messages",
+        json={
+            "content": "I need to archive records; it should take about 999999999999 hours",
+            "event_id": "pg-huge-effort",
+        },
+        headers=csrf(pg_client),
+    )
+
+    assert response.status_code == 201
+    with app.main.SessionLocal() as db:
+        commitment = db.scalar(select(Commitment))
+        assert commitment is not None
+        assert commitment.estimated_effort_minutes is None
+        assert commitment.effort_minutes is None
+        assert commitment.ambiguity == "effort_out_of_range"
+
+
 def test_postgres_extracted_titles_and_correction_boundaries_are_contained(pg_client):
     assert login(pg_client).status_code == 200
     headers = csrf(pg_client)
@@ -661,6 +765,85 @@ def test_concurrent_commitment_scans_create_one_reminder_and_message(pg_sessions
     with pg_sessions() as db:
         assert db.scalar(select(func.count()).select_from(Reminder)) == 1
         assert db.scalar(select(func.count()).select_from(Message)) == 1
+
+
+def test_conversation_before_commitment_lock_order_avoids_scan_completion_deadlock(
+    pg_sessions,
+):
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    with pg_sessions.begin() as db:
+        user = User(username="lock-order-race", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        commitment = Commitment(
+            user_id=user.id,
+            title="finish evaluation",
+            confidence=1,
+            derivation="test",
+            due_at=datetime(2026, 10, 2, 23, 59, tzinfo=timezone.utc),
+            estimated_effort_minutes=180,
+            importance=2,
+            created_at=datetime(2026, 9, 24, 9, tzinfo=timezone.utc),
+        )
+        db.add_all([conversation, commitment])
+        db.flush()
+        user_id, conversation_id, commitment_id = user.id, conversation.id, commitment.id
+
+    completion = pg_sessions()
+    scan_pid: Queue[int] = Queue()
+    try:
+        completion.execute(text("SET LOCAL lock_timeout = '2s'"))
+        locked_conversation = completion.scalar(
+            select(ConversationSession)
+            .where(ConversationSession.id == conversation_id)
+            .with_for_update()
+        )
+        assert locked_conversation is not None
+
+        def scan():
+            with pg_sessions() as db:
+                scan_pid.put(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
+                return AgentRuntime(clock=FakeClock(now)).handle(
+                    db, user_id, RuntimeEvent("lock-order-scan", "commitment_check")
+                )
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(scan)
+            pid = scan_pid.get(timeout=10)
+            deadline = time.monotonic() + 10
+            waiting = False
+            while time.monotonic() < deadline:
+                with pg_sessions() as observer:
+                    waiting = bool(
+                        observer.execute(
+                            text(
+                                "SELECT wait_event_type = 'Lock' FROM pg_stat_activity "
+                                "WHERE pid = :pid"
+                            ),
+                            {"pid": pid},
+                        ).scalar_one_or_none()
+                    )
+                if waiting:
+                    break
+                time.sleep(0.01)
+            assert waiting, "scan never reached the deterministic conversation lock wait"
+
+            locked_commitment = completion.scalar(
+                select(Commitment).where(Commitment.id == commitment_id).with_for_update()
+            )
+            assert locked_commitment is not None
+            locked_commitment.state = "complete"
+            locked_commitment.completed_at = now
+            completion.commit()
+            result = future.result(timeout=10)
+        assert result["surfaced"] == 0
+    finally:
+        completion.close()
+
+    with pg_sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Reminder)) == 0
+        assert db.scalar(select(func.count()).select_from(Message)) == 0
 
 
 def test_completion_winning_scan_race_suppresses_stale_reminder(pg_sessions):

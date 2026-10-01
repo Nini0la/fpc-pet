@@ -3,14 +3,15 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import Commitment, Episode, ProvenanceLink, Reminder
+from .effort import bounded_effort_minutes
+from .models import Commitment, ConversationSession, Episode, ProvenanceLink, Reminder
 from .persistence import append_message, get_or_create_conversation
 
 POLICY_VERSION = "m3-v1"
@@ -41,18 +42,6 @@ _WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
-_NUMBERS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-}
-
-
 def _zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)
@@ -62,6 +51,24 @@ def _zone(name: str) -> ZoneInfo:
 
 def _utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
+
+
+def _local_wall_time(
+    day: date, hour: int, minute: int, zone: ZoneInfo
+) -> tuple[datetime | None, str]:
+    naive = datetime.combine(day, time(hour, minute))
+    valid: list[datetime] = []
+    for fold in (0, 1):
+        candidate = naive.replace(tzinfo=zone, fold=fold)
+        round_trip = candidate.astimezone(timezone.utc).astimezone(zone)
+        if round_trip.replace(tzinfo=None) == naive:
+            valid.append(candidate)
+    if not valid:
+        return None, "nonexistent_local_time"
+    instants = {_utc(candidate) for candidate in valid}
+    if len(instants) > 1:
+        return None, "ambiguous_local_time"
+    return valid[0], "none"
 
 
 def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> ParsedTiming:
@@ -78,15 +85,16 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
         re.I,
     )
     if effort_match:
-        raw = effort_match.group(1).lower()
-        amount = int(raw) if raw.isdigit() else _NUMBERS[raw]
-        effort = amount * (60 if effort_match.group(2).lower().startswith("hour") else 1)
+        effort = bounded_effort_minutes(effort_match.group(1), effort_match.group(2))
+        if effort is None:
+            return ParsedTiming(ambiguity="effort_out_of_range")
 
     if re.search(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b", text):
         return ParsedTiming(estimated_effort_minutes=effort, ambiguity="ambiguous_numeric_date")
 
     iso_match = re.search(
-        r"\b(?:by|before|on)\s+(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}):(\d{2}))?\b",
+        r"\b(?:by|before|on)\s+(\d{4}-\d{2}-\d{2})"
+        r"(?:[ T](\d{2}):(\d{2})(Z|[+-]\d{2}:\d{2})?)?(?![\d:+-])",
         text,
         re.I,
     )
@@ -95,9 +103,24 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
         try:
             day = datetime.strptime(iso_match.group(1), "%Y-%m-%d").date()
             if iso_match.group(2):
-                local_due = datetime.combine(
-                    day, time(int(iso_match.group(2)), int(iso_match.group(3))), zone
-                )
+                hour = int(iso_match.group(2))
+                minute = int(iso_match.group(3))
+                offset = iso_match.group(4)
+                if offset:
+                    local_due = datetime.fromisoformat(
+                        f"{day.isoformat()}T{hour:02d}:{minute:02d}"
+                        f"{'+00:00' if offset == 'Z' else offset}"
+                    )
+                    ambiguity = "none"
+                else:
+                    resolved_due, ambiguity = _local_wall_time(day, hour, minute, zone)
+                    if resolved_due is None:
+                        return ParsedTiming(
+                            source_phrase=source_phrase,
+                            estimated_effort_minutes=effort,
+                            ambiguity=ambiguity,
+                        )
+                    local_due = resolved_due
                 granularity = "minute"
             else:
                 local_due = datetime.combine(day, time(23, 59, 59), zone)
@@ -142,7 +165,8 @@ def urgency_for(commitment: Commitment, now: datetime) -> Urgency:
         if due_at.tzinfo is None:
             due_at = due_at.replace(tzinfo=timezone.utc)
         due_hours = math.floor((due_at - now).total_seconds() / 3600)
-        slack_hours = due_hours - math.ceil((effort or 0) / 60)
+        if effort is not None:
+            slack_hours = due_hours - math.ceil(effort / 60)
     touched_at = commitment.last_touched_at or commitment.created_at
     inactivity = max(0, (now.date() - touched_at.date()).days)
     blocked = sum(
@@ -209,20 +233,59 @@ class ProspectiveReminderSkill:
     scan_limit = 100
 
     def run(self, db: Session, user_id: str, event_id: str, now: datetime) -> int:
+        conversation = get_or_create_conversation(db, user_id, created_at=now)
+        locked_conversation = db.scalar(
+            select(ConversationSession)
+            .where(
+                ConversationSession.id == conversation.id,
+                ConversationSession.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        if locked_conversation is None:
+            raise ValueError("Unknown conversation")
+        conversation = locked_conversation
+        base = select(Commitment).where(
+            Commitment.user_id == user_id,
+            Commitment.deleted.is_(False),
+            Commitment.state.in_(("open", "in_progress", "waiting")),
+            Commitment.ambiguity == "none",
+        )
+        cursor_created_at = conversation.reminder_scan_cursor_created_at
+        cursor_id = conversation.reminder_scan_cursor_id
+        query = base
+        if cursor_created_at is not None and cursor_id is not None:
+            query = query.where(
+                or_(
+                    Commitment.created_at > cursor_created_at,
+                    and_(
+                        Commitment.created_at == cursor_created_at,
+                        Commitment.id > cursor_id,
+                    ),
+                )
+            )
         commitments = list(
             db.scalars(
-                select(Commitment)
-                .where(
-                    Commitment.user_id == user_id,
-                    Commitment.deleted.is_(False),
-                    Commitment.state.in_(("open", "in_progress", "waiting")),
-                    Commitment.ambiguity == "none",
-                )
+                query
                 .order_by(Commitment.created_at, Commitment.id)
                 .limit(self.scan_limit)
                 .with_for_update()
             )
         )
+        if not commitments and cursor_created_at is not None:
+            commitments = list(
+                db.scalars(
+                    base.order_by(Commitment.created_at, Commitment.id)
+                    .limit(self.scan_limit)
+                    .with_for_update()
+                )
+            )
+        if commitments:
+            conversation.reminder_scan_cursor_created_at = commitments[-1].created_at
+            conversation.reminder_scan_cursor_id = commitments[-1].id
+        else:
+            conversation.reminder_scan_cursor_created_at = None
+            conversation.reminder_scan_cursor_id = None
         surfaced = 0
         for commitment in commitments:
             urgency = urgency_for(commitment, now)
@@ -247,7 +310,6 @@ class ProspectiveReminderSkill:
             )
             if existing is not None:
                 continue
-            db.refresh(commitment)
             if commitment.deleted or commitment.state not in {"open", "in_progress", "waiting"}:
                 continue
             metadata = {
@@ -275,7 +337,6 @@ class ProspectiveReminderSkill:
             except IntegrityError:
                 db.expire_all()
                 continue
-            conversation = get_or_create_conversation(db, user_id, created_at=now)
             message = append_message(
                 db,
                 user_id=user_id,

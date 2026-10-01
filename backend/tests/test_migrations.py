@@ -416,6 +416,123 @@ def test_prospective_memory_migration_upgrades_and_downgrades_explicitly(tmp_pat
     assert "op.drop_table" in migration
 
 
+def test_reminder_tenant_boundary_migration_is_explicit_and_reversible(tmp_path: Path):
+    database_path = tmp_path / "reminder-tenant-boundary.db"
+    database_url = f"sqlite:///{database_path}"
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert {
+        "reminder_scan_cursor_created_at",
+        "reminder_scan_cursor_id",
+    } <= column_names(database_path, "conversation_sessions")
+    engine = create_engine(database_url)
+    reminder_fks = {
+        (
+            tuple(item["constrained_columns"]),
+            item["referred_table"],
+            tuple(item["referred_columns"]),
+        )
+        for item in inspect(engine).get_foreign_keys("reminders")
+    }
+    engine.dispose()
+    assert (("user_id", "commitment_id"), "commitments", ("user_id", "id")) in reminder_fks
+    assert (("user_id", "thread_id"), "threads", ("user_id", "id")) in reminder_fks
+    assert (("user_id", "surfaced_message_id"), "messages", ("user_id", "id")) in reminder_fks
+    assert (("user_id", "source_event_id"), "agent_events", ("user_id", "id")) in reminder_fks
+
+    downgraded = run_alembic(database_url, "downgrade", "0004")
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert "reminder_scan_cursor_id" not in column_names(
+        database_path, "conversation_sessions"
+    )
+
+
+def test_tenant_safe_reminder_migration_preserves_valid_existing_rows_on_postgres():
+    database_url = os.getenv("POSTGRES_TEST_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+
+    assert run_alembic(database_url, "upgrade", "0004").returncode == 0
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, created_at, timezone) VALUES "
+                "('tenant-user', 'tenant-owner', CURRENT_TIMESTAMP, 'UTC')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO conversation_sessions "
+                "(id, user_id, created_at, last_activity_at) VALUES "
+                "('tenant-conversation', 'tenant-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO threads "
+                "(id, user_id, created_at, title, state, confidence, derivation, version, "
+                "priority, deleted) VALUES "
+                "('tenant-thread', 'tenant-user', CURRENT_TIMESTAMP, 'thread', 'active', 1, "
+                "'test', 1, 0, false)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO commitments "
+                "(id, user_id, created_at, last_touched_at, title, state, confidence, "
+                "derivation, version, priority, deleted, importance, ambiguity, dependencies, "
+                "related_thread_id) VALUES "
+                "('tenant-commitment', 'tenant-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
+                "'task', 'open', 1, 'test', 1, 0, false, 0, 'none', '[]'::json, "
+                "'tenant-thread')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO agent_events "
+                "(id, user_id, created_at, external_id, kind, request_fingerprint, status) "
+                "VALUES ('tenant-event', 'tenant-user', CURRENT_TIMESTAMP, 'event', "
+                "'commitment_check', 'fingerprint', 'handled')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO messages "
+                "(id, user_id, created_at, conversation_id, role, content, actor, ordinal) "
+                "VALUES ('tenant-message', 'tenant-user', CURRENT_TIMESTAMP, "
+                "'tenant-conversation', 'assistant', 'valid', 'assistant', 1)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO reminders "
+                "(id, user_id, created_at, commitment_id, thread_id, policy_version, "
+                "relevance_window, reason_code, reason_metadata, state, surfaced_message_id, "
+                "source_event_id, attempt_count) VALUES "
+                "('tenant-reminder', 'tenant-user', CURRENT_TIMESTAMP, 'tenant-commitment', "
+                "'tenant-thread', 'm3-v1', 'window', 'test', '{}'::json, 'surfaced', "
+                "'tenant-message', 'tenant-event', 1)"
+            )
+        )
+    engine.dispose()
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM reminders")).scalar_one() == 1
+    engine.dispose()
+    assert run_alembic(database_url, "downgrade", "0004").returncode == 0
+    assert run_alembic(database_url, "upgrade", "head").returncode == 0
+
+
 def test_prospective_memory_backfills_last_touched_from_created_at_on_postgres():
     database_url = os.getenv("POSTGRES_TEST_URL")
     if not database_url:

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import OperationalError
 
 
 @pytest.fixture()
@@ -32,6 +33,28 @@ def login(client, code="correct horse battery staple", username="owner"):
 
 def csrf(client):
     return {"origin": "http://testserver", "x-csrf-token": client.cookies.get("csrf_token")}
+
+
+def test_retryable_database_conflict_returns_409_instead_of_500(client, monkeypatch):
+    import app.main
+
+    class SerializationFailure(Exception):
+        sqlstate = "40001"
+
+    assert login(client).status_code == 200
+
+    def fail_retryably(*_args, **_kwargs):
+        raise OperationalError("forced serialization failure", {}, SerializationFailure())
+
+    monkeypatch.setattr(app.main.runtime, "handle", fail_retryably)
+    response = client.post(
+        "/api/events/scheduled",
+        json={"event_id": "retryable-conflict", "kind": "commitment_check"},
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Concurrent database operation; retry safely"
 
 
 def test_login_fail_closed_and_cookie_security(client):

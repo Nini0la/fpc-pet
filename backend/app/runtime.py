@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from .effort import bounded_effort_minutes
+
 
 @dataclass(frozen=True)
 class StateProposal:
@@ -29,12 +31,29 @@ class DeterministicModel:
         return "I’ll carry that forward." if text.strip() else "What would you like to discuss?"
 
 
+def is_demonstrative_completion(text: str) -> bool:
+    normalized = " ".join(text.strip().split()).casefold()
+    return bool(
+        re.fullmatch(
+            r"(?:actually,?\s*)?(?:"
+            r"i\s+(?:finished|completed)\s+that|"
+            r"(?:i(?:'m| am)?\s+)?done\s+with\s+that"
+            r")(?:\s+already)?[.!?]?",
+            normalized,
+        )
+    )
+
+
 class StateExtractor:
     def extract(self, text: str) -> StateProposal:
         normalized = " ".join(text.strip().split())
         lower = normalized.lower()
         if lower == "remind me about that":
             return StateProposal("clarification", confidence=1.0)
+        if is_demonstrative_completion(normalized):
+            return StateProposal(
+                "transition", title=normalized, transition="complete", confidence=0.95
+            )
         transitions = {
             "finished": "complete",
             "abandon": "abandon",
@@ -62,20 +81,9 @@ class StateExtractor:
             re.I,
         )
         if effort_update:
-            words = {
-                "one": 1,
-                "two": 2,
-                "three": 3,
-                "four": 4,
-                "five": 5,
-                "six": 6,
-                "seven": 7,
-                "eight": 8,
-            }
-            amount_text = effort_update.group(2).lower()
-            amount = int(amount_text) if amount_text.isdigit() else words[amount_text]
-            if effort_update.group(3).lower().startswith("hour"):
-                amount *= 60
+            amount = bounded_effort_minutes(effort_update.group(2), effort_update.group(3))
+            if amount is None:
+                return StateProposal("clarification", confidence=1.0)
             return StateProposal(
                 "temporal_update", effort_update.group(1), effort_minutes=amount, confidence=0.95
             )
@@ -108,21 +116,6 @@ class StateExtractor:
                 re.I,
             )
             if effort_match:
-                words = {
-                    "one": 1,
-                    "two": 2,
-                    "three": 3,
-                    "four": 4,
-                    "five": 5,
-                    "six": 6,
-                    "seven": 7,
-                    "eight": 8,
-                }
-                amount_token = effort_match.group(1).lower()
-                effort = (
-                    int(amount_token) if amount_token.isdigit() else words[amount_token]
-                )
-                if effort_match.group(2).lower().startswith("hour"):
-                    effort *= 60
+                effort = bounded_effort_minutes(effort_match.group(1), effort_match.group(2))
             return StateProposal("commitment", body, deadline, effort, confidence=0.95)
         return StateProposal("none")

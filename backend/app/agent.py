@@ -27,7 +27,12 @@ from .models import (
 )
 from .persistence import MutationResult, append_message, atomic_update
 from .prospective import ProspectiveReminderSkill, parse_commitment_timing
-from .runtime import DeterministicModel, StateExtractor, StateProposal
+from .runtime import (
+    DeterministicModel,
+    StateExtractor,
+    StateProposal,
+    is_demonstrative_completion,
+)
 
 
 @dataclass(frozen=True)
@@ -243,12 +248,18 @@ class AgentRuntime:
                     user_id=user_id,
                     title=proposal.title or "",
                     deadline_hint=proposal.deadline_hint,
-                    effort_minutes=proposal.effort_minutes,
+                    effort_minutes=(
+                        None
+                        if timing.ambiguity == "effort_out_of_range"
+                        else proposal.effort_minutes
+                    ),
                     due_at=timing.due_at,
                     due_granularity=timing.due_granularity,
                     due_source_text=timing.source_phrase,
                     estimated_effort_minutes=(
-                        timing.estimated_effort_minutes or proposal.effort_minutes
+                        None
+                        if timing.ambiguity == "effort_out_of_range"
+                        else timing.estimated_effort_minutes or proposal.effort_minutes
                     ),
                     ambiguity=timing.ambiguity,
                     confidence=proposal.confidence,
@@ -345,11 +356,11 @@ class AgentRuntime:
                 matches = [
                     item for item in candidates if words & {w.lower() for w in item.title.split()}
                 ]
-                is_demonstrative_completion = (
+                demonstrative_completion = (
                     proposal.transition == "complete"
-                    and "finished that already" in event.content.lower()
+                    and is_demonstrative_completion(event.content)
                 )
-                if is_demonstrative_completion:
+                if demonstrative_completion:
                     surfaced_candidates = [
                         item
                         for item in candidates
@@ -381,15 +392,17 @@ class AgentRuntime:
                             "surfaced commitment."
                         )
                 if (
-                    not is_demonstrative_completion
+                    not demonstrative_completion
                     and not matches
                     and transition_reply is None
                     and "that" in event.content.lower()
                     and candidates
                 ):
                     matches = [candidates[-1]]
-                if matches:
-                    target = matches[-1]
+                if len(matches) > 1:
+                    transition_reply = "Which item did you mean?"
+                elif matches:
+                    target = matches[0]
                     state = "active" if proposal.transition == "reactivate" else proposal.transition
                     state = "abandoned" if state == "abandon" else state
                     changes: dict[str, Any] = {
@@ -452,6 +465,25 @@ class AgentRuntime:
                 reply = (
                     f"I saved that commitment, but “{target.due_source_text}” is not a valid "
                     "date or time. What date and time did you mean?"
+                )
+            elif (
+                proposal.kind == "commitment"
+                and isinstance(target, Commitment)
+                and target.ambiguity == "effort_out_of_range"
+            ):
+                reply = (
+                    "I saved that commitment without an effort estimate. Please give an estimate "
+                    "between 1 minute and 7 days."
+                )
+            elif (
+                proposal.kind == "commitment"
+                and isinstance(target, Commitment)
+                and target.ambiguity in {"nonexistent_local_time", "ambiguous_local_time"}
+            ):
+                reply = (
+                    "I saved that commitment without a deadline because "
+                    f"“{target.due_source_text}” "
+                    "is ambiguous in your timezone. Please include an explicit UTC offset."
                 )
             else:
                 reply = self.model.respond(event.content)

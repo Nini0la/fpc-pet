@@ -20,7 +20,7 @@ from app.models import (
     SkillRun,
     User,
 )
-from app.prospective import parse_commitment_timing, urgency_for
+from app.prospective import _explanation, parse_commitment_timing, urgency_for
 from app.runtime import StateExtractor
 
 
@@ -105,6 +105,30 @@ def test_invalid_recognized_iso_date_or_clock_is_retained_for_clarification():
         assert parsed.ambiguity == "invalid_explicit_datetime"
 
 
+def test_dst_gap_and_fold_wall_times_require_clarification_but_offsets_are_explicit():
+    now = datetime(2026, 1, 1, 9, tzinfo=timezone.utc)
+
+    gap = parse_commitment_timing(
+        "Submit report by 2026-03-08 02:30", now, "America/New_York"
+    )
+    fold = parse_commitment_timing(
+        "Submit report by 2026-11-01 01:30", now, "America/New_York"
+    )
+    daylight = parse_commitment_timing(
+        "Submit report by 2026-11-01 01:30-04:00", now, "America/New_York"
+    )
+    standard = parse_commitment_timing(
+        "Submit report by 2026-11-01 01:30-05:00", now, "America/New_York"
+    )
+
+    assert gap.due_at is None
+    assert gap.ambiguity == "nonexistent_local_time"
+    assert fold.due_at is None
+    assert fold.ambiguity == "ambiguous_local_time"
+    assert daylight.due_at == datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc)
+    assert standard.due_at == datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc)
+
+
 def test_urgency_increases_as_slack_shrinks_and_reasons_are_exact():
     monday = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
     thursday = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
@@ -138,6 +162,28 @@ def test_urgency_increases_as_slack_shrinks_and_reasons_are_exact():
     assert late.factors["slack_hours"] == 35
 
 
+def test_unknown_effort_has_no_slack_factor_bonus_or_explanation():
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    commitment = Commitment(
+        user_id="owner",
+        title="unknown effort task",
+        confidence=1,
+        derivation="test",
+        due_at=now + timedelta(hours=24),
+        importance=0,
+        created_at=now,
+    )
+
+    urgency = urgency_for(commitment, now)
+
+    assert urgency.score == 40
+    assert urgency.factors["effort_minutes"] is None
+    assert urgency.factors["slack_hours"] is None
+    explanation = _explanation(commitment.title, urgency)
+    assert "estimated effort" not in explanation
+    assert "slack" not in explanation
+
+
 def test_recent_touch_resets_inactivity_without_changing_creation_time():
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
     commitment = Commitment(
@@ -162,6 +208,48 @@ def test_unknown_temporal_values_are_not_fabricated():
     assert parsed.due_at is None
     assert parsed.estimated_effort_minutes is None
     assert parsed.ambiguity == "none"
+
+
+def test_effort_outside_documented_bounds_is_not_persisted_and_requests_clarification():
+    sessions = make_sessions()
+    now = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
+    parsed = parse_commitment_timing(
+        "I need to archive records; it should take about 999999999999 hours",
+        now,
+        "UTC",
+    )
+    assert parsed.estimated_effort_minutes is None
+    assert parsed.ambiguity == "effort_out_of_range"
+
+    with sessions.begin() as db:
+        user = User(username="effort-owner")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+
+    with sessions() as db:
+        AgentRuntime(clock=FakeClock(now)).handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "huge-effort",
+                "user_message",
+                "I need to archive records; it should take about 999999999999 hours",
+                conversation_id,
+            ),
+        )
+
+    with sessions() as db:
+        commitment = db.scalar(select(Commitment))
+        assert commitment.estimated_effort_minutes is None
+        assert commitment.effort_minutes is None
+        assert commitment.ambiguity == "effort_out_of_range"
+        assert "between 1 minute and 7 days" in db.scalars(
+            select(Message).order_by(Message.ordinal)
+        ).all()[-1].content
 
 
 def test_runtime_persists_normalized_date_effort_and_source_phrase():
@@ -426,6 +514,50 @@ def test_duplicate_checks_create_one_reminder_per_relevance_window():
         assert db.scalar(select(func.count()).select_from(Message)) == 1
 
 
+def test_repeated_bounded_scans_advance_past_cold_rows_to_later_eligible_work():
+    sessions = make_sessions()
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    with sessions.begin() as db:
+        user = User(username="fair-scan-owner")
+        db.add(user)
+        db.flush()
+        db.add(ConversationSession(user_id=user.id))
+        for index in range(100):
+            db.add(
+                Commitment(
+                    user_id=user.id,
+                    title=f"cold task {index}",
+                    confidence=1,
+                    derivation="test",
+                    created_at=now - timedelta(minutes=101 - index),
+                )
+            )
+        urgent = Commitment(
+            user_id=user.id,
+            title="urgent row 101",
+            confidence=1,
+            derivation="test",
+            next_relevant_moment=now,
+            created_at=now,
+        )
+        db.add(urgent)
+        db.flush()
+        user_id, urgent_id = user.id, urgent.id
+
+    runtime = AgentRuntime(clock=FakeClock(now))
+    with sessions() as db:
+        first = runtime.handle(db, user_id, RuntimeEvent("fair-scan-1", "commitment_check"))
+    with sessions() as db:
+        second = runtime.handle(db, user_id, RuntimeEvent("fair-scan-2", "commitment_check"))
+
+    assert first["surfaced"] == 0
+    assert second["surfaced"] == 1
+    with sessions() as db:
+        reminders = db.scalars(select(Reminder)).all()
+        assert len(reminders) == 1
+        assert reminders[0].commitment_id == urgent_id
+
+
 def test_explicit_next_relevant_moment_surfaces_without_inventing_factors():
     sessions = make_sessions()
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
@@ -482,7 +614,18 @@ def test_deleted_commitment_never_surfaces():
     assert result["surfaced"] == 0
 
 
-def test_finished_that_resolves_uniquely_most_recently_surfaced_commitment():
+@pytest.mark.parametrize(
+    "content",
+    [
+        "I finished that",
+        "I finished that already",
+        "I completed that",
+        "I completed that already",
+        "done with that",
+        "done with that already",
+    ],
+)
+def test_demonstrative_completion_variants_resolve_only_unique_recent_surface(content):
     sessions = make_sessions()
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
     user_id, conversation_id, commitment_id = seed_due_commitment(sessions, now)
@@ -494,7 +637,7 @@ def test_finished_that_resolves_uniquely_most_recently_surfaced_commitment():
             db,
             user_id,
             RuntimeEvent(
-                "finished", "user_message", "Actually, I finished that already", conversation_id
+                "finished", "user_message", content, conversation_id
             ),
         )
 
@@ -511,7 +654,11 @@ def test_finished_that_resolves_uniquely_most_recently_surfaced_commitment():
     assert result["surfaced"] == 0
 
 
-def test_finished_that_without_surfaced_candidate_asks_and_does_not_mutate():
+@pytest.mark.parametrize(
+    "content",
+    ["I finished that", "I completed that already", "done with that"],
+)
+def test_demonstrative_completion_without_surfaced_candidate_asks(content):
     sessions = make_sessions()
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
     user_id, conversation_id, commitment_id = seed_due_commitment(sessions, now)
@@ -523,7 +670,7 @@ def test_finished_that_without_surfaced_candidate_asks_and_does_not_mutate():
             RuntimeEvent(
                 "unsurfaced-finished",
                 "user_message",
-                "Actually, I finished that already",
+                content,
                 conversation_id,
             ),
         )
@@ -537,7 +684,11 @@ def test_finished_that_without_surfaced_candidate_asks_and_does_not_mutate():
         )
 
 
-def test_finished_that_asks_when_multiple_commitments_were_surfaced_together():
+@pytest.mark.parametrize(
+    "content",
+    ["I finished that already", "I completed that", "done with that already"],
+)
+def test_demonstrative_completion_asks_when_multiple_were_surfaced_together(content):
     sessions = make_sessions()
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
     with sessions.begin() as db:
@@ -570,7 +721,7 @@ def test_finished_that_asks_when_multiple_commitments_were_surfaced_together():
             RuntimeEvent(
                 "ambiguous-finished",
                 "user_message",
-                "Actually, I finished that already",
+                content,
                 conversation_id,
             ),
         )

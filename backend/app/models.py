@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     String,
     Text,
@@ -58,6 +59,10 @@ class Session(Base):
 class ConversationSession(Owned, Base):
     __tablename__ = "conversation_sessions"
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    reminder_scan_cursor_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reminder_scan_cursor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     __table_args__ = (
         UniqueConstraint("user_id", name="uq_conversation_sessions_user_id"),
     )
@@ -72,6 +77,7 @@ class Message(Owned, Base):
     ordinal: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (
         CheckConstraint("role in ('user','assistant','system')"),
+        UniqueConstraint("user_id", "id", name="uq_messages_user_id_id"),
         UniqueConstraint("conversation_id", "ordinal", name="uq_messages_conversation_ordinal"),
     )
 
@@ -85,7 +91,10 @@ class Thread(Owned, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
-    __table_args__ = (CheckConstraint("state in ('active','dormant','abandoned')"),)
+    __table_args__ = (
+        CheckConstraint("state in ('active','dormant','abandoned')"),
+        UniqueConstraint("user_id", "id", name="uq_threads_user_id_id"),
+    )
 
 
 class Commitment(Owned, Base):
@@ -125,6 +134,7 @@ class Commitment(Owned, Base):
         ),
         CheckConstraint("importance between 0 and 3"),
         CheckConstraint("estimated_effort_minutes is null or estimated_effort_minutes >= 0"),
+        UniqueConstraint("user_id", "id", name="uq_commitments_user_id_id"),
     )
 
     def __init__(self, **kwargs):
@@ -134,21 +144,15 @@ class Commitment(Owned, Base):
 
 class Reminder(Owned, Base):
     __tablename__ = "reminders"
-    commitment_id: Mapped[str] = mapped_column(
-        ForeignKey("commitments.id", ondelete="CASCADE"), index=True
-    )
-    thread_id: Mapped[str | None] = mapped_column(ForeignKey("threads.id"), nullable=True)
+    commitment_id: Mapped[str] = mapped_column(String(36), index=True)
+    thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     policy_version: Mapped[str] = mapped_column(String(30))
     relevance_window: Mapped[str] = mapped_column(String(80))
     reason_code: Mapped[str] = mapped_column(String(50))
     reason_metadata: Mapped[dict] = mapped_column(JSON)
     state: Mapped[str] = mapped_column(String(20), default="pending")
-    surfaced_message_id: Mapped[str | None] = mapped_column(
-        ForeignKey("messages.id"), nullable=True
-    )
-    source_event_id: Mapped[str | None] = mapped_column(
-        ForeignKey("agent_events.id"), nullable=True
-    )
+    surfaced_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
     __table_args__ = (
@@ -161,6 +165,27 @@ class Reminder(Owned, Base):
         ),
         CheckConstraint("state in ('pending','surfaced','suppressed','failed')"),
         CheckConstraint("attempt_count between 0 and 3"),
+        ForeignKeyConstraint(
+            ["user_id", "commitment_id"],
+            ["commitments.user_id", "commitments.id"],
+            name="fk_reminders_user_commitment",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "thread_id"],
+            ["threads.user_id", "threads.id"],
+            name="fk_reminders_user_thread",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "surfaced_message_id"],
+            ["messages.user_id", "messages.id"],
+            name="fk_reminders_user_surfaced_message",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "source_event_id"],
+            ["agent_events.user_id", "agent_events.id"],
+            name="fk_reminders_user_source_event",
+        ),
     )
 
     def __init__(self, **kwargs):
@@ -196,7 +221,10 @@ class AgentEvent(Owned, Base):
     kind: Mapped[str] = mapped_column(String(50))
     request_fingerprint: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(20), default="handled")
-    __table_args__ = (UniqueConstraint("user_id", "external_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "external_id"),
+        UniqueConstraint("user_id", "id", name="uq_agent_events_user_id_id"),
+    )
 
 
 class ProvenanceLink(Owned, Base):

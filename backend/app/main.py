@@ -5,12 +5,13 @@ import hmac
 import os
 import secrets
 from datetime import date, datetime, timedelta
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
@@ -72,6 +73,7 @@ app.add_middleware(
 runtime = AgentRuntime()
 TODAY_COLLECTION_LIMIT = 50
 SCHEDULE_CATCHUP_DAYS = 1
+RETRYABLE_SQLSTATES = {"40001", "40P01", "55P03"}
 
 
 def digest(value: str) -> str:
@@ -84,6 +86,13 @@ def db_session():
         yield db
     finally:
         db.close()
+
+
+def raise_retryable_database_conflict(db: DBSession, error: OperationalError) -> NoReturn:
+    db.rollback()
+    if getattr(error.orig, "sqlstate", None) in RETRYABLE_SQLSTATES:
+        raise HTTPException(409, "Concurrent database operation; retry safely") from error
+    raise error
 
 
 def current_user(request: Request, db: DBSession = Depends(db_session)) -> User:
@@ -204,6 +213,8 @@ def send_message(
     except (IdempotencyConflict, ConcurrentMutation) as error:
         db.rollback()
         raise HTTPException(409, str(error)) from error
+    except OperationalError as error:
+        raise_retryable_database_conflict(db, error)
     if result["idempotent"]:
         response.status_code = 200
     return result
@@ -714,3 +725,5 @@ def scheduled(
     except (IdempotencyConflict, ConcurrentMutation) as error:
         db.rollback()
         raise HTTPException(409, str(error)) from error
+    except OperationalError as error:
+        raise_retryable_database_conflict(db, error)
