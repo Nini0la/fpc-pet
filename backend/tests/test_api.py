@@ -879,6 +879,50 @@ def test_scheduled_and_user_events_share_runtime(client):
     assert r.json()["handled_by"] == "AgentRuntime.handle"
 
 
+def test_vocabulary_api_is_bounded_tenant_scoped_correctable_and_deletable(client):
+    assert login(client, username="vocab-owner").status_code == 200
+    headers = csrf(client)
+    created = client.post(
+        "/api/events/scheduled",
+        json={"event_id": "vocabulary-morning", "kind": "morning_briefing"},
+        headers=headers,
+    )
+    assert created.status_code == 202
+    listing = client.get("/api/vocabulary?limit=1&offset=0")
+    assert listing.status_code == 200
+    item = listing.json()["items"][0]
+    assert item["display_word"] == "inchoate"
+    assert client.get("/api/vocabulary?limit=101").status_code == 422
+    assert client.get("/api/vocabulary?offset=10001").status_code == 422
+
+    corrected = client.patch(
+        f"/api/vocabulary/{item['id']}",
+        json={
+            "display_word": "Inchoate",
+            "definition": item["definition"],
+            "natural_example": item["natural_example"],
+            "version": item["version"],
+        },
+        headers=headers,
+    )
+    assert corrected.status_code == 200
+    assert corrected.json()["display_word"] == "Inchoate"
+    assert client.get("/api/today").json()["vocabulary"]["word"] == "Inchoate"
+
+    assert login(client, username="other-vocab-owner").status_code == 200
+    assert client.get("/api/vocabulary").json()["items"] == []
+    assert client.get(f"/api/vocabulary/{item['id']}/attempts").status_code == 404
+
+    assert login(client, username="vocab-owner").status_code == 200
+    deleted = client.delete(
+        f"/api/vocabulary/{item['id']}?version={corrected.json()['version']}",
+        headers=csrf(client),
+    )
+    assert deleted.status_code == 204
+    assert client.get("/api/vocabulary").json()["items"] == []
+    assert client.get("/api/today").json()["vocabulary"] is None
+
+
 def test_today_and_bounded_tenant_scoped_journal_history(client):
     import app.main
     from app.agent import AgentRuntime

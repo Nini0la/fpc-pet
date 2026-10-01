@@ -29,6 +29,7 @@ from app.models import (
     Reminder,
     Thread,
     User,
+    VocabularyItem,
 )
 from app.persistence import MutationResult, atomic_update
 
@@ -304,6 +305,7 @@ def test_concurrent_morning_triggers_create_one_logical_briefing(pg_sessions):
     assert sorted(result["idempotent"] for result in results) == [False, True]
     with pg_sessions() as db:
         assert db.scalar(select(func.count()).select_from(DailyBriefing)) == 1
+        assert db.scalar(select(func.count()).select_from(VocabularyItem)) == 1
         proactive = db.scalars(select(Message).where(Message.role == "assistant")).all()
         assert len(proactive) == 1
         assert "Power List" in proactive[0].content

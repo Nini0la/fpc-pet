@@ -15,6 +15,7 @@ export type Urgency={
 export type TodayData={
   local_date:string;
   briefing:{content:string;local_date:string}|null;
+  vocabulary:{word:string;definition:string;example:string;mode:"new"|"review"|"rest";reason:string;mastery_state:string;next_review_at:string|null}|null;
   power_list:PowerItem[];
   open_commitments:{id:string;title:string;deadline_hint?:string|null;urgency?:Urgency}[];
   resurfaced_items:{id:string;title:string}[];
@@ -26,6 +27,12 @@ export default function Today({data}:{data:TodayData}){
     <h2 id="today-heading">Today</h2>
     <time>{data.local_date}</time>
     {data.briefing&&<p>{data.briefing.content}</p>}
+    {data.vocabulary&&<section aria-labelledby="vocabulary-heading">
+      <h3 id="vocabulary-heading">{data.vocabulary.mode==="new"?"Word of the Day":"Vocabulary review"}</h3>
+      <p><strong>{data.vocabulary.word}</strong> — {data.vocabulary.definition}</p>
+      <p><em>{data.vocabulary.example}</em></p>
+      <small>{data.vocabulary.reason}{data.vocabulary.next_review_at?` · next review ${data.vocabulary.next_review_at}`:""}</small>
+    </section>}
     {data.power_list.length>0&&<section><h3>Power List</h3><ol>{data.power_list.map(item=><li key={item.id}><strong>{item.title}</strong><small>{item.reason}</small></li>)}</ol></section>}
     {data.open_commitments.length>0&&<section><h3>Open commitments</h3><ul>{data.open_commitments.map(item=><li key={item.id}>
       {item.title}{item.deadline_hint?` — ${item.deadline_hint}`:""}

@@ -1,8 +1,8 @@
-# Implementation status — Milestone 3
+# Implementation status — Milestone 4
 
 ## TDD evidence
 
-M3 was implemented in vertical RED → GREEN slices. Representative observed failures before implementation:
+M4 was implemented in vertical RED → GREEN slices. Representative observed failures included missing vocabulary models, an absent Today vocabulary section, and an explicit self-correction that initially left an ambiguous attempt ungraded; each received the minimum implementation before the next slice. Representative observed failures before implementation:
 
 | Slice | RED | GREEN |
 |---|---|---|
@@ -20,6 +20,10 @@ Tests were written and observed failing before their corresponding behavior. Doc
 
 ## Delivered
 
+- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic review intervals/mastery, sentence retention, ambiguous-answer clarification, explicit self-correction, and weak-due priority.
+- One structured morning vocabulary slot inside the existing briefing/message and a post-reflection active-recall prompt in the same chat, all through `AgentRuntime` with event/skill/provenance records and local-date idempotency.
+- Bounded tenant vocabulary/history APIs, CAS correction, content-scrubbing deletion tombstones, Today rendering, and reversible composite-tenant-safe Alembic `0006`.
+
 - Commitment temporal/effort/importance/relevance/surfacing/ambiguity/dependency/availability/thread/completion fields without filling unknown values.
 - Tenant-owned Reminder with reason code, factor-only metadata, lifecycle/retry state, commitment/thread/message/event links, and one-per-window/policy uniqueness.
 - Bounded explicit weekday, `next weekday`, ISO date/time, numeric-date ambiguity, and word/digit effort parsing using injected time and IANA timezone. Effort accepts 1 minute through 7 days and is rejected before unbounded integer conversion. Date-only deadlines preserve granularity/source and use local 23:59:59 for urgency; recognized invalid ISO dates/clocks and nonexistent/ambiguous local wall times preserve the original source, never guess `due_at`, and request clarification. Explicit UTC offsets disambiguate folds.
@@ -33,11 +37,10 @@ Tests were written and observed failing before their corresponding behavior. Doc
 
 ## Verification
 
-- Updated M3/extraction/retry-conflict focus: `49 passed`.
-- Real PostgreSQL blocker focus: `7 passed`, covering huge effort containment, deterministic conversation/commitment lock ordering, all four tenant-bound Reminder relationships, and preservation of existing valid rows through `0005` upgrade/downgrade/re-upgrade.
-- Full PostgreSQL-enabled backend run: `156 passed`, zero skips, including real-data migration cycles, forced races, bounded fair scans, cross-tenant FK rejection, and completion-vs-scan suppression.
-- Ruff and mypy pass. Frontend `6 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
+- Full PostgreSQL-enabled backend run: `165 passed` in 696.62s, zero skips.
+- Focused final concurrency/migration run: `3 passed`, covering parallel morning vocabulary idempotency plus SQLite and real-PostgreSQL migration cycles.
+- Ruff and mypy pass. Frontend `7 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
 
 ## Known limits
 
-The parser is intentionally bounded, not general natural-language date understanding. Numeric slash dates remain ambiguous. Availability contributes only when already stored; M3 does not add calendar integration. Retry fields and reconciliation state are bounded, but external job orchestration remains deployment-owned. Today UI remains the minimal M2 surface consuming the expanded API; full UX polish remains M5. The deterministic model adapter remains development/test-only.
+Vocabulary grading is deliberately conservative exact normalized matching, not semantic evaluation; ambiguous prose requires clarification or explicit self-correction. Contextual reuse is limited to a deterministic `inchoate` template for explicit “early draft”, “not fully formed”, or “rough idea” contexts. The curated lexicon is intentionally small and versioned in source. Full Today/History navigation polish remains M5, external job orchestration remains deployment-owned, and the deterministic model adapter remains development/test-only.

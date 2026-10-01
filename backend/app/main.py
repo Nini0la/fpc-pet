@@ -30,6 +30,8 @@ from .models import (
     Session,
     Thread,
     User,
+    VocabularyAttempt,
+    VocabularyItem,
     utcnow,
 )
 from .persistence import MutationResult, atomic_update, get_or_create_conversation
@@ -611,9 +613,29 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
         )
     )
     reflection_status = "completed" if journal else "awaiting" if prompt else "not_started"
+    vocabulary_section = briefing.sections.get("vocabulary") if briefing else None
+    if vocabulary_section and vocabulary_section.get("item_id"):
+        current_vocabulary = db.scalar(
+            select(VocabularyItem).where(
+                VocabularyItem.user_id == user.id,
+                VocabularyItem.id == vocabulary_section["item_id"],
+                VocabularyItem.deleted.is_(False),
+            )
+        )
+        if current_vocabulary is None:
+            vocabulary_section = None
+        else:
+            vocabulary_section = vocabulary_section | {
+                "word": current_vocabulary.display_word,
+                "definition": current_vocabulary.definition,
+                "example": current_vocabulary.natural_example,
+                "mastery_state": current_vocabulary.mastery_state,
+                "next_review_at": current_vocabulary.next_review_at,
+            }
     return {
         "local_date": local_date,
         "briefing": item_dict(briefing) if briefing else None,
+        "vocabulary": vocabulary_section,
         "power_list": briefing.power_list if briefing else [],
         "open_commitments": [commitment_dict(item) for item in open_items],
         "active_threads": [item_dict(item) for item in active_threads],
@@ -658,6 +680,140 @@ def journal_history(
     return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
 
 
+@app.get("/api/vocabulary")
+def vocabulary_history(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    rows = db.scalars(
+        select(VocabularyItem)
+        .where(VocabularyItem.user_id == user.id, VocabularyItem.deleted.is_(False))
+        .order_by(VocabularyItem.introduced_at.desc(), VocabularyItem.id)
+        .offset(offset)
+        .limit(limit + 1)
+    ).all()
+    return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
+
+
+@app.get("/api/vocabulary/{id}/attempts")
+def vocabulary_attempts(
+    id: str,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    owned_record(VocabularyItem, id, user, db)
+    rows = db.scalars(
+        select(VocabularyAttempt)
+        .where(
+            VocabularyAttempt.user_id == user.id,
+            VocabularyAttempt.vocabulary_item_id == id,
+        )
+        .order_by(VocabularyAttempt.created_at.desc(), VocabularyAttempt.id)
+        .offset(offset)
+        .limit(limit + 1)
+    ).all()
+    return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
+
+
+class VocabularyCorrection(BaseModel):
+    display_word: str = Field(min_length=1, max_length=100)
+    definition: str = Field(min_length=1, max_length=1000)
+    natural_example: str = Field(min_length=1, max_length=1000)
+    version: int = Field(ge=1)
+
+
+@app.patch("/api/vocabulary/{id}", dependencies=[Depends(mutation_guard)])
+def correct_vocabulary(
+    id: str,
+    body: VocabularyCorrection,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    owned_record(VocabularyItem, id, user, db)
+    require_mutation(
+        atomic_update(
+            db,
+            VocabularyItem,
+            id,
+            user.id,
+            body.version,
+            {
+                "display_word": body.display_word.strip(),
+                "definition": body.definition.strip(),
+                "natural_example": body.natural_example.strip(),
+                "updated_at": runtime.clock.now(),
+            },
+        )
+    )
+    db.add(
+        ProvenanceLink(
+            user_id=user.id,
+            target_id=id,
+            source_type="correction",
+            source_id=None,
+            confidence=1.0,
+            derivation="user-vocabulary-correction",
+            metadata_only=True,
+        )
+    )
+    db.commit()
+    return item_dict(owned_record(VocabularyItem, id, user, db))
+
+
+@app.delete("/api/vocabulary/{id}", status_code=204, dependencies=[Depends(mutation_guard)])
+def delete_vocabulary(
+    id: str,
+    version: Annotated[int | None, Query(ge=1)] = None,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    item = owned_record(VocabularyItem, id, user, db)
+    require_mutation(
+        atomic_update(
+            db,
+            VocabularyItem,
+            id,
+            user.id,
+            version if version is not None else item.version,
+            {
+                "deleted": True,
+                "normalized_word": f"deleted-{item.id}",
+                "display_word": "[deleted]",
+                "definition": "[deleted]",
+                "natural_example": "[deleted]",
+                "user_sentences": [],
+                "next_review_at": None,
+                "updated_at": runtime.clock.now(),
+            },
+        )
+    )
+    for attempt in db.scalars(
+        select(VocabularyAttempt).where(
+            VocabularyAttempt.user_id == user.id,
+            VocabularyAttempt.vocabulary_item_id == id,
+        )
+    ):
+        attempt.prompt = "[deleted]"
+        attempt.user_answer = None
+        attempt.user_sentence = None
+    db.add(
+        ProvenanceLink(
+            user_id=user.id,
+            target_id=id,
+            source_type="deletion_tombstone",
+            source_id=None,
+            confidence=1.0,
+            derivation="user-vocabulary-deletion",
+            metadata_only=True,
+        )
+    )
+    db.commit()
+
+
 @app.get("/api/reminders")
 def reminders(
     limit: int = Query(default=20, ge=1, le=100),
@@ -687,7 +843,10 @@ class ScheduledIn(BaseModel):
 def scheduled(
     body: ScheduledIn, db: DBSession = Depends(db_session), user: User = Depends(current_user)
 ):
-    daily_kinds = {"morning_briefing", "evening_reflection"}
+    daily_kinds = {"morning_briefing", "morning_trigger", "evening_reflection"}
+    allowed_kinds = daily_kinds | {"commitment_check", "vocabulary_review", "dormancy_scan"}
+    if body.kind not in allowed_kinds:
+        raise HTTPException(422, "Unsupported scheduled event kind")
     if body.intended_local_date is not None and body.kind not in daily_kinds:
         raise HTTPException(422, "intended_local_date is only valid for daily events")
     if body.kind in daily_kinds and body.intended_local_date is not None:

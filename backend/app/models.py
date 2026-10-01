@@ -292,3 +292,65 @@ class ReflectionPrompt(Owned, Base):
         ),
         CheckConstraint("status in ('awaiting','completed')"),
     )
+
+
+class VocabularyItem(Owned, Base):
+    __tablename__ = "vocabulary_items"
+    normalized_word: Mapped[str] = mapped_column(String(100))
+    display_word: Mapped[str] = mapped_column(String(100))
+    definition: Mapped[str] = mapped_column(Text)
+    natural_example: Mapped[str] = mapped_column(Text)
+    introduced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    introduced_local_date: Mapped[date] = mapped_column(Date)
+    recall_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    correct_recalls: Mapped[int] = mapped_column(Integer, default=0)
+    user_sentences: Mapped[list] = mapped_column(JSON, default=list)
+    exposure_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    mastery_state: Mapped[str] = mapped_column(String(20), default="new")
+    next_review_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source: Mapped[str] = mapped_column(String(100))
+    source_version: Mapped[str] = mapped_column(String(30))
+    policy_version: Mapped[str] = mapped_column(String(30))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    __table_args__ = (
+        UniqueConstraint("user_id", "normalized_word", name="uq_vocabulary_user_word"),
+        UniqueConstraint("user_id", "id", name="uq_vocabulary_user_id"),
+        CheckConstraint("mastery_state in ('new','developing','familiar','mastered')"),
+        CheckConstraint("recall_attempts >= 0 and correct_recalls >= 0"),
+        CheckConstraint("exposure_count >= 1"),
+    )
+
+
+class VocabularyAttempt(Owned, Base):
+    __tablename__ = "vocabulary_attempts"
+    vocabulary_item_id: Mapped[str] = mapped_column(String(36))
+    prompt: Mapped[str] = mapped_column(Text)
+    user_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    correct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    user_sentence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_window: Mapped[str] = mapped_column(String(40))
+    source_event_id: Mapped[str] = mapped_column(String(36))
+    policy_version: Mapped[str] = mapped_column(String(30))
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "vocabulary_item_id", "review_window", "policy_version",
+            name="uq_vocabulary_attempt_window",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "vocabulary_item_id"],
+            ["vocabulary_items.user_id", "vocabulary_items.id"],
+            name="fk_vocabulary_attempt_user_item",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "source_event_id"],
+            ["agent_events.user_id", "agent_events.id"],
+            name="fk_vocabulary_attempt_user_event",
+        ),
+    )

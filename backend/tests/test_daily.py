@@ -127,7 +127,7 @@ def test_morning_event_persists_one_structured_briefing_in_the_same_chat():
         assert len(briefing.power_list) == 2
         assert briefing.power_list[0]["title"] == "Submit demo"
         assert "deadline" in briefing.power_list[0]["reason"]
-        assert "vocabulary" not in briefing.sections
+        assert briefing.sections["vocabulary"]["word"] == "inchoate"
         messages = db.scalars(select(Message).order_by(Message.created_at, Message.id)).all()
         assert len(messages) == 1
         assert messages[0].conversation_id == conversation_id

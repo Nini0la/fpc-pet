@@ -98,6 +98,23 @@ def test_daily_loop_migration_upgrades_and_downgrades_explicitly(tmp_path: Path)
     assert "op.drop_table" in migration
 
 
+def test_vocabulary_migration_is_explicit_and_reversible(tmp_path: Path):
+    database_path = tmp_path / "vocabulary.db"
+    database_url = f"sqlite:///{database_path}"
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert {"vocabulary_items", "vocabulary_attempts"} <= table_names(database_path)
+
+    downgraded = run_alembic(database_url, "downgrade", "0005")
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert "vocabulary_items" not in table_names(database_path)
+    assert "vocabulary_attempts" not in table_names(database_path)
+
+    reupgraded = run_alembic(database_url, "upgrade", "head")
+    assert reupgraded.returncode == 0, reupgraded.stderr
+    assert {"vocabulary_items", "vocabulary_attempts"} <= table_names(database_path)
+
+
 def seed_duplicate_conversations(database_url: str) -> None:
     engine = create_engine(database_url)
     with engine.begin() as connection:

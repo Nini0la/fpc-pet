@@ -1,8 +1,17 @@
-# Continuity — Milestone 3
+# Continuity — Milestone 4
 
 A narrow personal-AI prototype that carries explicit commitments, threads, shared episodes, and a daily morning/evening loop forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
 
-## What M3 adds
+## What M4 adds
+
+- A tenant-owned longitudinal vocabulary record and attempt history, backed by a versioned curated lexicon beginning with **inchoate**. Definitions and examples are source data, never model inventions.
+- The deterministic `VocabularyLearningSkill` uses the same `AgentRuntime.handle` path as chat and scheduled events. Morning briefings contain one structured learning slot: the weakest due word wins; a new word appears only when no weak word is due.
+- Evening reflection remains conversational, then asks one active-recall question in the same chat. Exact normalized MVP grading supports explicit self-correction, optional sentence retention, and leaves ambiguous prose ungraded.
+- An inspectable schedule advances correct recalls through new → developing → familiar → mastered, regresses incorrect recalls to developing, exposes the next review/reason, and retires mastered words from automatic deliberate review.
+- `/api/vocabulary` and per-item attempts provide bounded tenant-scoped history; versioned correction and deletion immediately affect selection. Deletion scrubs vocabulary/attempt content and retains only metadata-only audit provenance.
+- Today renders the current Word of the Day or due review. Alembic `0006` is reversible and enforces composite tenant ownership for attempts.
+
+M1–M3 continuity behavior remains available:
 
 - Scheduled `morning_briefing` and `evening_reflection` events enter the same `AgentRuntime.handle` path as chat.
 - A deterministic, inspectable Power List ranks approximately three open commitments/threads using deadlines, explicit importance/user priority, inactivity, recent promises, and yesterday's explicitly unfinished work. Every selected item includes a reason.
@@ -21,7 +30,7 @@ A narrow personal-AI prototype that carries explicit commitments, threads, share
 3. `cd backend && uv sync --extra dev && set -a && source ../.env && set +a && uv run alembic upgrade head && uv run uvicorn app.main:app --reload`
 4. `cd frontend && npm ci && npm run dev`
 
-Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through M3 (`0004`). If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development fallback. Migration URLs are never logged.
+Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through M4 (`0006`). If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development fallback. Migration URLs are never logged.
 
 Production fails closed unless the database URL, access code, a 32+ character session secret, and exact CORS origins are present. Set `APP_ENV=production`; cookies are Secure in production. The deterministic adapter (`MODEL_MODE=deterministic`) is only a development/test response stub and is rejected in production. No live Nebius/Nemotron use is claimed yet.
 

@@ -24,6 +24,7 @@ from .models import (
     SkillRun,
     Thread,
     User,
+    VocabularyItem,
 )
 from .persistence import MutationResult, append_message, atomic_update
 from .prospective import ProspectiveReminderSkill, parse_commitment_timing
@@ -33,6 +34,7 @@ from .runtime import (
     StateProposal,
     is_demonstrative_completion,
 )
+from .vocabulary import VocabularyLearningSkill
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ class AgentRuntime:
         self.morning = MorningBriefingSkill()
         self.evening = EveningReflectionSkill()
         self.prospective = ProspectiveReminderSkill()
+        self.vocabulary = VocabularyLearningSkill()
 
     @staticmethod
     def _conversation_target(event: RuntimeEvent) -> str | None:
@@ -188,6 +191,8 @@ class AgentRuntime:
             return self._idempotent_result(db, prior, user_id, event, fingerprint)
         logical_idempotent = False
         reflection_handled = False
+        vocabulary_handled = False
+        vocabulary_reply: str | None = None
         surfaced = 0
         transition_reply: str | None = None
         if event.kind == "user_message" and event.content and event.conversation_id:
@@ -209,6 +214,46 @@ class AgentRuntime:
                 self.clock.now(),
                 self.history.allows_episodic_content(event.content),
             )
+            if reflection_handled:
+                vocabulary_prompt = self.vocabulary.prompt(
+                    db, user_id, recorded.id, self.clock.now(), append=False
+                )
+                if vocabulary_prompt:
+                    vocabulary_reply = (
+                        "Thanks — I’ve carried that into tomorrow. " + vocabulary_prompt
+                    )
+            else:
+                vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
+                    db, user_id, event.content, self.clock.now()
+                )
+                review_words = event.content.strip().split()
+                if (
+                    not vocabulary_handled
+                    and len(review_words) == 2
+                    and review_words[0].casefold() == "review"
+                ):
+                    vocabulary_reply = self.vocabulary.prompt(
+                        db,
+                        user_id,
+                        recorded.id,
+                        self.clock.now(),
+                        append=False,
+                        target_word=review_words[1],
+                    )
+                    vocabulary_handled = vocabulary_reply is not None
+                if not vocabulary_handled:
+                    reusable = db.scalar(
+                        select(VocabularyItem)
+                        .where(
+                            VocabularyItem.user_id == user_id,
+                            VocabularyItem.deleted.is_(False),
+                        )
+                        .order_by(VocabularyItem.last_reviewed_at.desc().nullslast())
+                    )
+                    if reusable is not None:
+                        vocabulary_reply = self.vocabulary.contextual_reuse(
+                            event.content, reusable
+                        )
             recalling_history = self.history.matches(event.content)
             episode_actor = self.history.actor_for(event.content)
             if not recalling_history and episode_actor is not None:
@@ -235,7 +280,7 @@ class AgentRuntime:
                 )
             proposal = (
                 StateProposal("none")
-                if reflection_handled
+                if reflection_handled or vocabulary_handled
                 else self.extractor.extract(event.content)
             )
             target: Commitment | Thread | None = None
@@ -439,6 +484,8 @@ class AgentRuntime:
                         transition_reply = f"Got it — I marked “{target.title}” complete."
             if transition_reply:
                 reply = transition_reply
+            elif vocabulary_reply:
+                reply = vocabulary_reply
             elif reflection_handled:
                 reply = "Thanks — I’ve carried that into tomorrow."
             elif recalling_history:
@@ -496,7 +543,7 @@ class AgentRuntime:
                 content=reply,
                 created_at=self.clock.now(),
             )
-        elif event.kind == "morning_briefing":
+        elif event.kind in {"morning_briefing", "morning_trigger"}:
             logical_idempotent = not self.morning.run(
                 db,
                 user_id,
@@ -514,15 +561,21 @@ class AgentRuntime:
             )
         elif event.kind == "commitment_check":
             surfaced = self.prospective.run(db, user_id, recorded.id, self.clock.now())
+        elif event.kind == "vocabulary_review":
+            logical_idempotent = self.vocabulary.prompt(
+                db, user_id, recorded.id, self.clock.now()
+            ) is None
         db.add(
             SkillRun(
                 user_id=user_id,
                 event_id=recorded.id,
                 skill_name=(
-                    self.evening.name
+                    self.vocabulary.name
+                    if event.kind == "vocabulary_review" or vocabulary_handled
+                    else self.evening.name
                     if event.kind == "evening_reflection" or reflection_handled
                     else self.morning.name
-                    if event.kind == "morning_briefing"
+                    if event.kind in {"morning_briefing", "morning_trigger"}
                     else self.prospective.name
                     if event.kind == "commitment_check"
                     else "shared-history-recall"

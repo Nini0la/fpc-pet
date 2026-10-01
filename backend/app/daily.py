@@ -174,6 +174,13 @@ class MorningBriefingSkill:
             item.__dict__ for item in rank_power_list(candidates, now, unfinished_ids)
         ]
         sections: dict[str, Any] = {}
+        from .vocabulary import VocabularyLearningSkill
+
+        vocabulary = VocabularyLearningSkill().morning_section(
+            db, user_id, event_id, now, local_date
+        )
+        if vocabulary:
+            sections["vocabulary"] = vocabulary
         collection_meta: dict[str, dict[str, int | bool]] = {}
         if commitments:
             sections["open_commitments"] = [
@@ -223,6 +230,16 @@ class MorningBriefingSkill:
             sections["collection_meta"] = collection_meta
 
         lines = ["Good morning."]
+        if vocabulary:
+            if vocabulary["mode"] == "new":
+                lines.append(
+                    f"Word of the Day: {vocabulary['word']} — {vocabulary['definition']} "
+                    f"Example: {vocabulary['example']} ({vocabulary['reason']})"
+                )
+            elif vocabulary["mode"] == "review":
+                lines.append(
+                    f"Due vocabulary review: {vocabulary['word']} ({vocabulary['reason']})."
+                )
         if commitments:
             lines.append(
                 "Open commitments: " + "; ".join(item.title for item in commitments[:5])
