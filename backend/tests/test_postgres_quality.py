@@ -259,10 +259,9 @@ def test_simultaneous_morning_and_evening_share_one_ordered_conversation(pg_sess
         assert len(conversations) == 1
         assert {message.conversation_id for message in messages} == {conversations[0].id}
         assert [message.ordinal for message in messages] == [1, 2]
-        assert {message.content for message in messages} >= {
-            "Good morning.",
-            "How did things go today?",
-        }
+        contents = {message.content for message in messages}
+        assert "How did things go today?" in contents
+        assert any(content.startswith("Good morning.") for content in contents)
         assert db.scalar(
             select(func.count()).select_from(DailyBriefing).where(DailyBriefing.user_id == user_id)
         ) == 1

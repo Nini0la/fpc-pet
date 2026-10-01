@@ -105,6 +105,7 @@ class Commitment(Owned, Base):
     last_surfaced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    last_touched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ambiguity: Mapped[str] = mapped_column(String(50), default="none")
     dependencies: Mapped[list] = mapped_column(JSON, default=list)
     available_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -125,6 +126,10 @@ class Commitment(Owned, Base):
         CheckConstraint("importance between 0 and 3"),
         CheckConstraint("estimated_effort_minutes is null or estimated_effort_minutes >= 0"),
     )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("last_touched_at", kwargs.get("created_at") or utcnow())
+        super().__init__(**kwargs)
 
 
 class Reminder(Owned, Base):

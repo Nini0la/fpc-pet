@@ -300,6 +300,7 @@ class AgentRuntime:
                         {
                             "estimated_effort_minutes": proposal.effort_minutes,
                             "effort_minutes": proposal.effort_minutes,
+                            "last_touched_at": self.clock.now(),
                         },
                     )
                     if outcome is not MutationResult.UPDATED:
@@ -344,18 +345,22 @@ class AgentRuntime:
                 matches = [
                     item for item in candidates if words & {w.lower() for w in item.title.split()}
                 ]
-                if (
+                is_demonstrative_completion = (
                     proposal.transition == "complete"
                     and "finished that already" in event.content.lower()
-                ):
+                )
+                if is_demonstrative_completion:
                     surfaced_candidates = [
                         item
                         for item in candidates
-                        if isinstance(item, Commitment) and item.last_surfaced_at is not None
+                        if isinstance(item, Commitment)
+                        and item.state in {"open", "in_progress", "waiting"}
+                        and item.last_surfaced_at is not None
                     ]
                     surfaced_candidates.sort(
                         key=lambda item: (item.last_surfaced_at, item.id), reverse=True
                     )
+                    matches = []
                     if surfaced_candidates:
                         latest_at = surfaced_candidates[0].last_surfaced_at
                         latest: list[Commitment | Thread] = [
@@ -366,13 +371,18 @@ class AgentRuntime:
                         if len(latest) == 1:
                             matches = latest
                         else:
-                            matches = []
                             transition_reply = (
                                 "Which commitment did you finish? I surfaced more than one "
                                 "at the same time."
                             )
+                    else:
+                        transition_reply = (
+                            "Which commitment did you finish? I don’t have a uniquely recent "
+                            "surfaced commitment."
+                        )
                 if (
-                    not matches
+                    not is_demonstrative_completion
+                    and not matches
                     and transition_reply is None
                     and "that" in event.content.lower()
                     and candidates
@@ -382,7 +392,14 @@ class AgentRuntime:
                     target = matches[-1]
                     state = "active" if proposal.transition == "reactivate" else proposal.transition
                     state = "abandoned" if state == "abandon" else state
-                    changes: dict[str, Any] = {"state": state}
+                    changes: dict[str, Any] = {
+                        "state": state,
+                        **(
+                            {"last_touched_at": self.clock.now()}
+                            if isinstance(target, Commitment)
+                            else {}
+                        ),
+                    }
                     if isinstance(target, Commitment) and state == "complete":
                         changes["completed_at"] = self.clock.now()
                     outcome = atomic_update(
@@ -424,10 +441,17 @@ class AgentRuntime:
             elif (
                 proposal.kind == "commitment"
                 and isinstance(target, Commitment)
-                and target.ambiguity != "none"
+                and target.ambiguity == "ambiguous_numeric_date"
+            ):
+                reply = "I saved that commitment, but is 10/11 October 11 or November 10?"
+            elif (
+                proposal.kind == "commitment"
+                and isinstance(target, Commitment)
+                and target.ambiguity == "invalid_explicit_datetime"
             ):
                 reply = (
-                    "I saved that commitment, but is 10/11 October 11 or November 10?"
+                    f"I saved that commitment, but “{target.due_source_text}” is not a valid "
+                    "date or time. What date and time did you mean?"
                 )
             else:
                 reply = self.model.respond(event.content)

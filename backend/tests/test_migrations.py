@@ -399,6 +399,7 @@ def test_prospective_memory_migration_upgrades_and_downgrades_explicitly(tmp_pat
         "importance",
         "next_relevant_moment",
         "last_surfaced_at",
+        "last_touched_at",
         "ambiguity",
         "dependencies",
         "available_minutes",
@@ -413,3 +414,129 @@ def test_prospective_memory_migration_upgrades_and_downgrades_explicitly(tmp_pat
     migration = Path("alembic/versions/0004_prospective_memory.py").read_text()
     assert "op.create_table" in migration
     assert "op.drop_table" in migration
+
+
+def test_prospective_memory_backfills_last_touched_from_created_at_on_postgres():
+    database_url = os.getenv("POSTGRES_TEST_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+
+    assert run_alembic(database_url, "upgrade", "0003").returncode == 0
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, created_at, timezone) VALUES "
+                "('touch-user', 'touch-owner', '2026-09-01T09:00:00Z', 'UTC')"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO commitments "
+                "(id, user_id, created_at, title, state, confidence, derivation, version, "
+                "priority, deleted) VALUES "
+                "('touch-commitment', 'touch-user', '2026-09-02T10:30:00Z', "
+                "'legacy task', 'open', 1, 'test', 1, 0, false)"
+            )
+        )
+    engine.dispose()
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        created_at, last_touched_at = connection.execute(
+            text(
+                "SELECT created_at, last_touched_at FROM commitments "
+                "WHERE id = 'touch-commitment'"
+            )
+        ).one()
+        nullable = next(
+            column["nullable"]
+            for column in inspect(connection).get_columns("commitments")
+            if column["name"] == "last_touched_at"
+        )
+    engine.dispose()
+    assert last_touched_at == created_at
+    assert nullable is False
+
+
+def test_prospective_memory_postgres_downgrade_maps_m3_states_and_reupgrades():
+    database_url = os.getenv("POSTGRES_TEST_URL")
+    if not database_url:
+        pytest.skip("POSTGRES_TEST_URL is required for PostgreSQL migration tests")
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    engine.dispose()
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    engine = create_engine(database_url)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO users (id, username, created_at, timezone) "
+                "VALUES ('state-user', 'state-owner', CURRENT_TIMESTAMP, 'UTC')"
+            )
+        )
+        for index, state in enumerate(
+            (
+                "open",
+                "in_progress",
+                "waiting",
+                "complete",
+                "completed",
+                "cancelled",
+                "abandoned",
+                "dormant",
+            )
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO commitments "
+                    "(id, user_id, created_at, last_touched_at, title, state, confidence, "
+                    "derivation, version, priority, deleted, importance, ambiguity, dependencies) "
+                    "VALUES (:id, 'state-user', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :title, "
+                    ":state, 1, 'test', 1, 0, false, 0, 'none', '[]'::json)"
+                ),
+                {"id": f"state-{index}", "title": state, "state": state},
+            )
+    engine.dispose()
+
+    downgraded = run_alembic(database_url, "downgrade", "0003")
+    assert downgraded.returncode == 0, downgraded.stderr
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        states = {
+            row.title: row.state
+            for row in connection.execute(text("SELECT title, state FROM commitments"))
+        }
+    engine.dispose()
+    assert states == {
+        "open": "open",
+        "in_progress": "open",
+        "waiting": "open",
+        "complete": "complete",
+        "completed": "complete",
+        "cancelled": "abandoned",
+        "abandoned": "abandoned",
+        "dormant": "dormant",
+    }
+
+    reupgraded = run_alembic(database_url, "upgrade", "head")
+    assert reupgraded.returncode == 0, reupgraded.stderr
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        reupgraded_states = {
+            row.title: row.state
+            for row in connection.execute(text("SELECT title, state FROM commitments"))
+        }
+    engine.dispose()
+    assert reupgraded_states == states

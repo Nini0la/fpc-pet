@@ -39,6 +39,14 @@ def upgrade() -> None:
         "commitments", sa.Column("last_surfaced_at", sa.DateTime(timezone=True), nullable=True)
     )
     op.add_column(
+        "commitments", sa.Column("last_touched_at", sa.DateTime(timezone=True), nullable=True)
+    )
+    # Commitments had no updated_at in the M2 lineage, so created_at is the
+    # deterministic best-known activity time for every legacy row.
+    op.execute("UPDATE commitments SET last_touched_at = created_at")
+    with op.batch_alter_table("commitments") as batch:
+        batch.alter_column("last_touched_at", nullable=False)
+    op.add_column(
         "commitments",
         sa.Column("ambiguity", sa.String(50), nullable=False, server_default="none"),
     )
@@ -123,6 +131,18 @@ def downgrade() -> None:
     op.drop_index("ix_reminders_commitment_id", table_name="reminders")
     op.drop_index("ix_reminders_user_id", table_name="reminders")
     op.drop_table("reminders")
+    # M2 accepts only open/complete/abandoned/dormant. Preserve those states and
+    # deterministically collapse M3-only states before restoring its constraint:
+    # active work and waiting become open, completed becomes complete, and a
+    # cancellation becomes abandoned. This is intentionally loss-aware: a later
+    # re-upgrade cannot reconstruct the more specific M3 state.
+    op.execute(
+        "UPDATE commitments SET state = CASE "
+        "WHEN state IN ('in_progress', 'waiting') THEN 'open' "
+        "WHEN state = 'completed' THEN 'complete' "
+        "WHEN state = 'cancelled' THEN 'abandoned' "
+        "ELSE state END"
+    )
     with op.batch_alter_table("commitments") as batch:
         batch.drop_constraint("ck_commitments_state_m3", type_="check")
         batch.drop_constraint("ck_commitments_estimated_effort", type_="check")
@@ -140,6 +160,7 @@ def downgrade() -> None:
         "available_minutes",
         "dependencies",
         "ambiguity",
+        "last_touched_at",
         "last_surfaced_at",
         "next_relevant_moment",
         "importance",

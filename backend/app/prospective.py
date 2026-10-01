@@ -91,18 +91,24 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
         re.I,
     )
     if iso_match:
-        day = datetime.strptime(iso_match.group(1), "%Y-%m-%d").date()
-        if iso_match.group(2):
-            local_due = datetime.combine(
-                day, time(int(iso_match.group(2)), int(iso_match.group(3))), zone
+        source_phrase = iso_match.group(0)
+        try:
+            day = datetime.strptime(iso_match.group(1), "%Y-%m-%d").date()
+            if iso_match.group(2):
+                local_due = datetime.combine(
+                    day, time(int(iso_match.group(2)), int(iso_match.group(3))), zone
+                )
+                granularity = "minute"
+            else:
+                local_due = datetime.combine(day, time(23, 59, 59), zone)
+                granularity = "date"
+        except ValueError:
+            return ParsedTiming(
+                source_phrase=source_phrase,
+                estimated_effort_minutes=effort,
+                ambiguity="invalid_explicit_datetime",
             )
-            granularity = "minute"
-        else:
-            local_due = datetime.combine(day, time(23, 59, 59), zone)
-            granularity = "date"
-        return ParsedTiming(
-            _utc(local_due), granularity, iso_match.group(0), effort, "none"
-        )
+        return ParsedTiming(_utc(local_due), granularity, source_phrase, effort, "none")
 
     weekday_match = re.search(
         r"\b(before|by|on)?\s*(next\s+)?"
@@ -137,7 +143,8 @@ def urgency_for(commitment: Commitment, now: datetime) -> Urgency:
             due_at = due_at.replace(tzinfo=timezone.utc)
         due_hours = math.floor((due_at - now).total_seconds() / 3600)
         slack_hours = due_hours - math.ceil((effort or 0) / 60)
-    inactivity = max(0, (now.date() - commitment.created_at.date()).days)
+    touched_at = commitment.last_touched_at or commitment.created_at
+    inactivity = max(0, (now.date() - touched_at.date()).days)
     blocked = sum(
         1 for item in (commitment.dependencies or []) if item.get("kind") == "blocked"
     )

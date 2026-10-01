@@ -65,6 +65,35 @@ def test_chat_persists_chronology_and_derived_provenance(client):
     assert links[0]["confidence"] == 0.95
 
 
+@pytest.mark.parametrize(
+    ("deadline", "source"),
+    [
+        ("2026-02-30", "by 2026-02-30"),
+        ("2026-10-02 24:00", "by 2026-10-02 24:00"),
+        ("2026-10-02 23:60", "by 2026-10-02 23:60"),
+    ],
+)
+def test_invalid_explicit_commitment_datetime_clarifies_without_server_error(
+    client, deadline, source
+):
+    login(client)
+    response = client.post(
+        "/api/chat/messages",
+        json={"content": f"I need to submit report by {deadline}", "event_id": deadline},
+        headers=csrf(client),
+    )
+
+    assert response.status_code == 201
+    commitment = client.get("/api/commitments").json()[0]
+    assert commitment["due_at"] is None
+    assert commitment["due_source_text"] == source
+    assert commitment["ambiguity"] == "invalid_explicit_datetime"
+    assert client.get("/api/chat/messages").json()[-1]["content"] == (
+        f"I saved that commitment, but “{source}” is not a valid date or time. "
+        "What date and time did you mean?"
+    )
+
+
 def test_commitment_check_surfaces_and_today_and_reminders_expose_urgency(client):
     import app.main
     from app.agent import AgentRuntime
@@ -683,6 +712,36 @@ def test_commitment_and_episode_correction_and_deletion(client):
     assert client.get("/api/history/recall", params={"q": "shipped"}).json() == []
 
 
+def test_commitment_api_correction_refreshes_last_touched_at(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    created = datetime(2026, 9, 21, 9, tzinfo=timezone.utc)
+    touched = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
+    clock = FakeClock(created)
+    app.main.runtime = AgentRuntime(clock=clock)
+    login(client)
+    headers = csrf(client)
+    assert client.post(
+        "/api/chat/messages",
+        json={"content": "I need to write report", "event_id": "touch-create"},
+        headers=headers,
+    ).status_code == 201
+    commitment = client.get("/api/commitments").json()[0]
+
+    clock.set(touched)
+    response = client.patch(
+        f"/api/commitments/{commitment['id']}",
+        json={"title": "write final report", "version": commitment["version"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    returned_touch = datetime.fromisoformat(response.json()["last_touched_at"])
+    assert returned_touch.replace(tzinfo=timezone.utc) == touched
+
+
 def test_completion_and_thread_lifecycle_transitions(client):
     login(client)
     h = csrf(client)
@@ -741,7 +800,7 @@ def test_negated_completion_keeps_an_open_commitment_open(client, update):
     assert client.get("/api/commitments").json()[0]["state"] == "open"
 
 
-def test_pronoun_completion_and_abandonment_use_recent_matching_state(client):
+def test_unsurfaced_pronoun_completion_clarifies_and_named_abandonment_mutates(client):
     login(client)
     h = csrf(client)
     client.post(
@@ -754,7 +813,8 @@ def test_pronoun_completion_and_abandonment_use_recent_matching_state(client):
         json={"content": "Actually, I finished that already", "event_id": "pc2"},
         headers=h,
     )
-    assert client.get("/api/commitments").json()[0]["state"] == "complete"
+    assert client.get("/api/commitments").json()[0]["state"] == "open"
+    assert "Which commitment" in client.get("/api/chat/messages").json()[-1]["content"]
     client.post(
         "/api/chat/messages",
         json={"content": "hang onto this idea: boxing", "event_id": "pa1"},

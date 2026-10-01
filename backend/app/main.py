@@ -354,7 +354,14 @@ def correct_commitment(
     user: User = Depends(current_user),
 ):
     require_mutation(
-        atomic_update(db, Commitment, id, user.id, body.version, {"title": body.title})
+        atomic_update(
+            db,
+            Commitment,
+            id,
+            user.id,
+            body.version,
+            {"title": body.title, "last_touched_at": runtime.clock.now()},
+        )
     )
     db.add(
         ProvenanceLink(
@@ -386,7 +393,11 @@ def delete_commitment(
             id,
             user.id,
             version if version is not None else item.version,
-            {"deleted": True, "title": "[deleted]"},
+            {
+                "deleted": True,
+                "title": "[deleted]",
+                "last_touched_at": runtime.clock.now(),
+            },
         )
     )
     db.commit()

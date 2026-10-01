@@ -91,6 +91,20 @@ def test_parse_explicit_dates_effort_and_ambiguity_in_user_timezone():
     assert ambiguous.ambiguity == "ambiguous_numeric_date"
 
 
+def test_invalid_recognized_iso_date_or_clock_is_retained_for_clarification():
+    now = datetime(2026, 1, 1, 9, tzinfo=timezone.utc)
+    for text, source in [
+        ("Submit report by 2026-02-30", "by 2026-02-30"),
+        ("Submit report by 2026-10-02 24:00", "by 2026-10-02 24:00"),
+        ("Submit report by 2026-10-02 23:60", "by 2026-10-02 23:60"),
+    ]:
+        parsed = parse_commitment_timing(text, now, "UTC")
+        assert parsed.due_at is None
+        assert parsed.due_granularity is None
+        assert parsed.source_phrase == source
+        assert parsed.ambiguity == "invalid_explicit_datetime"
+
+
 def test_urgency_increases_as_slack_shrinks_and_reasons_are_exact():
     monday = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
     thursday = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
@@ -122,6 +136,23 @@ def test_urgency_increases_as_slack_shrinks_and_reasons_are_exact():
     }
     assert late.bucket == "high"
     assert late.factors["slack_hours"] == 35
+
+
+def test_recent_touch_resets_inactivity_without_changing_creation_time():
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    commitment = Commitment(
+        user_id="owner",
+        title="evaluation",
+        confidence=1,
+        derivation="test",
+        importance=0,
+        created_at=now - timedelta(days=7),
+        last_touched_at=now,
+    )
+
+    urgency = urgency_for(commitment, now)
+
+    assert urgency.factors["inactivity_days"] == 0
 
 
 def test_unknown_temporal_values_are_not_fabricated():
@@ -216,6 +247,7 @@ def test_followup_effort_phrase_updates_one_explicitly_named_commitment():
             title="submit the evaluation",
             confidence=1,
             derivation="test",
+            created_at=now,
         )
         db.add_all([conversation, commitment])
         db.flush()
@@ -237,6 +269,45 @@ def test_followup_effort_phrase_updates_one_explicitly_named_commitment():
         commitment = db.get(Commitment, commitment_id)
         assert commitment.estimated_effort_minutes == 180
         assert commitment.effort_minutes == 180
+        assert commitment.last_touched_at.replace(tzinfo=timezone.utc) == now
+
+
+def test_temporal_update_refreshes_last_touched_at():
+    sessions = make_sessions()
+    created = datetime(2026, 9, 21, 9, tzinfo=timezone.utc)
+    now = datetime(2026, 9, 28, 9, tzinfo=timezone.utc)
+    with sessions.begin() as db:
+        user = User(username="touch-owner")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        commitment = Commitment(
+            user_id=user.id,
+            title="submit the evaluation",
+            confidence=1,
+            derivation="test",
+            created_at=created,
+        )
+        db.add_all([conversation, commitment])
+        db.flush()
+        user_id, conversation_id, commitment_id = user.id, conversation.id, commitment.id
+
+    with sessions() as db:
+        AgentRuntime(clock=FakeClock(now)).handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "touch-effort-update",
+                "user_message",
+                "The evaluation should take about three hours",
+                conversation_id,
+            ),
+        )
+
+    with sessions() as db:
+        commitment = db.get(Commitment, commitment_id)
+        assert commitment.last_touched_at.replace(tzinfo=timezone.utc) == now
+        assert urgency_for(commitment, now).factors["inactivity_days"] == 0
 
 
 def seed_due_commitment(sessions, now, *, state="open", deleted=False):
@@ -307,10 +378,36 @@ def test_periodic_check_is_noop_then_surfaces_complete_audit_bundle():
         assert db.get(Commitment, commitment_id).last_surfaced_at.replace(
             tzinfo=timezone.utc
         ) == clock.now()
+        assert db.get(Commitment, commitment_id).last_touched_at.replace(
+            tzinfo=timezone.utc
+        ) == datetime(2026, 9, 24, 9, tzinfo=timezone.utc)
         assert db.scalar(select(func.count()).select_from(Episode)) == 1
         assert db.scalar(select(func.count()).select_from(ProvenanceLink)) >= 2
         assert db.scalar(select(func.count()).select_from(SkillRun)) == 2
         assert db.scalar(select(func.count()).select_from(AgentEvent)) == 2
+
+
+def test_recent_touch_yields_zero_inactivity_and_exact_reminder_explanation():
+    sessions = make_sessions()
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    user_id, _, commitment_id = seed_due_commitment(sessions, now)
+    with sessions.begin() as db:
+        db.get(Commitment, commitment_id).last_touched_at = now
+
+    with sessions() as db:
+        result = AgentRuntime(clock=FakeClock(now)).handle(
+            db, user_id, RuntimeEvent("touched-check", "commitment_check")
+        )
+
+    assert result["surfaced"] == 1
+    with sessions() as db:
+        reminder = db.scalar(select(Reminder))
+        assert reminder.reason_metadata["factors"]["inactivity_days"] == 0
+        assert db.get(Message, reminder.surfaced_message_id).content == (
+            "I’m bringing up “finish evaluation” because the deadline is in 38 hours, "
+            "estimated effort is 180 minutes, schedule slack is 35 hours, importance is 2/3, "
+            "and 1 dependency is blocked."
+        )
 
 
 def test_duplicate_checks_create_one_reminder_per_relevance_window():
@@ -412,6 +509,32 @@ def test_finished_that_resolves_uniquely_most_recently_surfaced_commitment():
     with sessions() as db:
         result = runtime.handle(db, user_id, RuntimeEvent("later", "commitment_check"))
     assert result["surfaced"] == 0
+
+
+def test_finished_that_without_surfaced_candidate_asks_and_does_not_mutate():
+    sessions = make_sessions()
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    user_id, conversation_id, commitment_id = seed_due_commitment(sessions, now)
+
+    with sessions() as db:
+        AgentRuntime(clock=FakeClock(now)).handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "unsurfaced-finished",
+                "user_message",
+                "Actually, I finished that already",
+                conversation_id,
+            ),
+        )
+
+    with sessions() as db:
+        commitment = db.get(Commitment, commitment_id)
+        assert commitment.state == "open"
+        assert commitment.completed_at is None
+        assert db.scalars(select(Message).order_by(Message.ordinal)).all()[-1].content == (
+            "Which commitment did you finish? I don’t have a uniquely recent surfaced commitment."
+        )
 
 
 def test_finished_that_asks_when_multiple_commitments_were_surfaced_together():

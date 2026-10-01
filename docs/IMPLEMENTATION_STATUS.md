@@ -6,13 +6,13 @@ M3 was implemented in vertical RED → GREEN slices. Representative observed fai
 
 | Slice | RED | GREEN |
 |---|---|---|
-| Temporal schema and parsing | `Reminder` import missing; normalized fields absent | commitment timing/effort fields, Reminder model, explicit weekday/ISO parsing, ambiguity, timezone and end-of-local-day policy pass |
+| Temporal schema and parsing | `Reminder` import missing; normalized fields absent; invalid explicit ISO dates/clocks raised `ValueError` | commitment timing/effort fields, Reminder model, explicit weekday/ISO parsing, ambiguity, timezone and end-of-local-day policy pass; invalid recognized values preserve source, store no deadline, and clarify |
 | Runtime extraction | title retained date/effort prose and ambiguity was lost | chat persists normalized deadline, granularity, source phrase, effort, and clarification; named follow-up effort updates use CAS |
-| Urgency | Monday/Thursday policy and exact factors absent | deterministic low/medium/high score exposes deadline, effort, slack, importance, inactivity, blockers, and stored availability |
+| Urgency | Monday/Thursday policy and exact factors absent; inactivity used immutable creation time | deterministic low/medium/high score exposes deadline, effort, slack, importance, truthful `last_touched_at` inactivity, blockers, and stored availability |
 | Prospective runtime | `commitment_check` returned no surfaced count and wrote nothing | no-op then surfacing produces one atomic same-chat Reminder/message/Episode/event/skill/provenance bundle |
-| Suppression/replies | completion timestamp absent and generic `that` resolution ignored surfacing | terminal/deleted/ambiguous records are suppressed; unique latest surfaced commitment completes; tied candidates ask clarification |
+| Suppression/replies | completion timestamp absent and generic `that` resolution ignored surfacing; unsurfaced records could be selected by fallback | terminal/deleted/ambiguous records are suppressed; only a unique latest surfaced active commitment completes; absent/tied candidates ask clarification without mutation |
 | API/scheduling | Today had no urgency; intended window inputs were ignored | Today urgency, bounded tenant Reminder API, and validated timezone-aware catch-up windows pass |
-| Migration | `reminders` table absent at Alembic head | explicit reversible `0004` upgrade/downgrade passes on SQLite and PostgreSQL |
+| Migration | `reminders` table absent at Alembic head; M3-only states violated the restored M2 constraint on downgrade | explicit reversible `0004` backfills `last_touched_at`, applies the documented loss-aware state mapping, and passes real-data PostgreSQL downgrade/re-upgrade |
 | Concurrency | no M3 race coverage | real PostgreSQL proves one reminder under concurrent scans and suppression when completion wins the row-lock race |
 
 Tests were written and observed failing before their corresponding behavior. Documentation followed behavioral implementation.
@@ -21,21 +21,21 @@ Tests were written and observed failing before their corresponding behavior. Doc
 
 - Commitment temporal/effort/importance/relevance/surfacing/ambiguity/dependency/availability/thread/completion fields without filling unknown values.
 - Tenant-owned Reminder with reason code, factor-only metadata, lifecycle/retry state, commitment/thread/message/event links, and one-per-window/policy uniqueness.
-- Bounded explicit weekday, `next weekday`, ISO date/time, numeric-date ambiguity, and word/digit effort parsing using injected time and IANA timezone. Date-only deadlines preserve granularity/source and use local 23:59:59 for urgency.
-- Interpretable `m3-v1` urgency/slack service. Advancing Monday to Thursday increases urgency solely as deadline slack shrinks.
+- Bounded explicit weekday, `next weekday`, ISO date/time, numeric-date ambiguity, and word/digit effort parsing using injected time and IANA timezone. Date-only deadlines preserve granularity/source and use local 23:59:59 for urgency; recognized invalid ISO dates/clocks preserve the original source, never guess `due_at`, and request clarification.
+- Interpretable `m3-v1` urgency/slack service. `last_touched_at` is initialized/backfilled deterministically, refreshed by meaningful commitment mutations, and left unchanged by read-only scans; advancing Monday to Thursday increases urgency solely as deadline slack shrinks.
 - `ProspectiveReminderSkill` and periodic `commitment_check` through `AgentRuntime.handle`; authoritative row refresh immediately precedes surfacing.
 - Atomic proactive message, Reminder, Episode, SkillRun, AgentEvent, provenance, and exact true-factor explanation in the persistent chat.
 - PostgreSQL row locking, uniqueness, event fingerprints, bounded scan/retry, duplicate-scan safety, and completion-wins-race suppression.
-- “Actually, I finished that already” resolves only a uniquely most-recently surfaced commitment, records `completed_at`, and prevents future reminders; tied candidates receive clarification.
+- “Actually, I finished that already” resolves only a uniquely most-recently surfaced active commitment, records `completed_at`, and prevents future reminders; absent or tied surfaced candidates receive clarification with no mutation.
 - Live urgency in Today plus bounded, tenant-scoped `/api/reminders`; scheduled commitment checks validate aware intended instants and a 1–1440 minute catch-up window.
-- Explicit reversible Alembic `0004`; documentation updated for M3. No M4/M5/optional work was started.
+- Explicit reversible Alembic `0004`, including deterministic M3→M2 state mapping and `last_touched_at` backfill; documentation updated for M3. No M4/M5/optional work was started.
 
 ## Verification
 
-- M3 focused SQLite/API/migration tests pass.
-- Real PostgreSQL focused concurrency tests pass, including concurrent duplicate scans and completion-vs-scan suppression.
-- Full PostgreSQL-enabled backend run: `122 passed`, with zero skips. A separate real-PostgreSQL migration/race command passed all `3` targeted upgrade/downgrade, duplicate-scan, and completion-wins-race tests.
-- Final `make check`: backend `99 passed, 23 skipped` when `POSTGRES_TEST_URL` is not exported; Ruff and mypy pass; frontend `6 passed`, npm audit reports `0 vulnerabilities`, ESLint and TypeScript pass, and the production build succeeds.
+- Updated M3 focused SQLite suite: `23 passed`; invalid-date API and API-touch focused coverage also pass.
+- Real PostgreSQL migration/concurrency focus: `31 passed`, including real-data `0004` upgrade/downgrade/re-upgrade, deterministic `last_touched_at` backfill, duplicate scans, and completion-vs-scan suppression.
+- Full PostgreSQL-enabled backend run: `132 passed`, zero skips. The final newly added exact touched-reminder regression also passed in the updated `23`-test M3 file.
+- Ruff and mypy pass. Frontend `6 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
 
 ## Known limits
 
