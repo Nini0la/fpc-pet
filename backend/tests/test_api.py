@@ -923,6 +923,89 @@ def test_vocabulary_api_is_bounded_tenant_scoped_correctable_and_deletable(clien
     assert client.get("/api/today").json()["vocabulary"] is None
 
 
+@pytest.mark.parametrize("field", ["display_word", "definition", "natural_example"])
+@pytest.mark.parametrize("invalid", ["   \t\n", "… — !!!"])
+def test_vocabulary_correction_rejects_blank_or_punctuation_only_fields_without_writes(
+    client, field, invalid
+):
+    assert login(client).status_code == 200
+    headers = csrf(client)
+    assert client.post(
+        "/api/events/scheduled",
+        json={"event_id": "vocabulary-validation", "kind": "morning_briefing"},
+        headers=headers,
+    ).status_code == 202
+    item = client.get("/api/vocabulary").json()["items"][0]
+    provenance_before = client.get(f"/api/provenance/{item['id']}").json()
+    payload = {
+        "display_word": item["display_word"],
+        "definition": item["definition"],
+        "natural_example": item["natural_example"],
+        "version": item["version"],
+    }
+    payload[field] = invalid
+
+    response = client.patch(
+        f"/api/vocabulary/{item['id']}", json=payload, headers=headers
+    )
+
+    assert response.status_code == 422
+    assert client.get("/api/vocabulary").json()["items"][0] == item
+    assert client.get(f"/api/provenance/{item['id']}").json() == provenance_before
+
+
+def test_vocabulary_correction_applies_bounds_after_trimming(client):
+    assert login(client).status_code == 200
+    headers = csrf(client)
+    assert client.post(
+        "/api/events/scheduled",
+        json={"event_id": "vocabulary-trimmed-bounds", "kind": "morning_briefing"},
+        headers=headers,
+    ).status_code == 202
+    item = client.get("/api/vocabulary").json()["items"][0]
+
+    response = client.patch(
+        f"/api/vocabulary/{item['id']}",
+        json={
+            "display_word": f"  {'w' * 100}  ",
+            "definition": f"\n{'d' * 1000}\t",
+            "natural_example": f"  {'e' * 1000}\n",
+            "version": item["version"],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["display_word"] == "w" * 100
+    assert response.json()["definition"] == "d" * 1000
+    assert response.json()["natural_example"] == "e" * 1000
+
+
+def test_vocabulary_correction_accepts_meaningful_unicode_text(client):
+    assert login(client).status_code == 200
+    headers = csrf(client)
+    assert client.post(
+        "/api/events/scheduled",
+        json={"event_id": "vocabulary-unicode", "kind": "morning_briefing"},
+        headers=headers,
+    ).status_code == 202
+    item = client.get("/api/vocabulary").json()["items"][0]
+    expected = {
+        "display_word": "Élan",
+        "definition": "熱意をもって動き始める性質",
+        "natural_example": "L’idée naissante était déjà ясной.",
+    }
+
+    response = client.patch(
+        f"/api/vocabulary/{item['id']}",
+        json={**expected, "version": item["version"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert {field: response.json()[field] for field in expected} == expected
+
+
 def test_today_and_bounded_tenant_scoped_journal_history(client):
     import app.main
     from app.agent import AgentRuntime

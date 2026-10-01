@@ -370,7 +370,7 @@ def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(
     with engine.connect() as connection:
         assert connection.execute(text("SELECT count(*) FROM agent_events")).scalar_one() == 1
         assert connection.execute(text("SELECT count(*) FROM messages")).scalar_one() == 2
-        upgraded_fingerprint = connection.execute(
+        upgraded_fingerprint: str = connection.execute(
             text("SELECT request_fingerprint FROM agent_events WHERE id = 'legacy-agent-event'")
         ).scalar_one()
     engine.dispose()

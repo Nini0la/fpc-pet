@@ -9,7 +9,7 @@ from typing import Annotated, Any, NoReturn
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import create_engine, func, or_, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as DBSession
@@ -724,6 +724,16 @@ class VocabularyCorrection(BaseModel):
     definition: str = Field(min_length=1, max_length=1000)
     natural_example: str = Field(min_length=1, max_length=1000)
     version: int = Field(ge=1)
+
+    @field_validator("display_word", "definition", "natural_example", mode="before")
+    @classmethod
+    def trim_and_require_text(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        trimmed = value.strip()
+        if not any(character.isalnum() for character in trimmed):
+            raise ValueError("must contain text")
+        return trimmed
 
 
 @app.patch("/api/vocabulary/{id}", dependencies=[Depends(mutation_guard)])

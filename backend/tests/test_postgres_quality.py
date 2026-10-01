@@ -4,7 +4,7 @@ import importlib
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from queue import Queue
 from threading import Barrier
 
@@ -29,6 +29,7 @@ from app.models import (
     Reminder,
     Thread,
     User,
+    VocabularyAttempt,
     VocabularyItem,
 )
 from app.persistence import MutationResult, atomic_update
@@ -378,6 +379,159 @@ def test_forced_concurrent_due_mornings_increment_vocabulary_exposure_once(pg_se
                 Message.role == "assistant",
             )
         ) == 2
+
+
+def test_postgres_replayed_correction_never_walks_back_to_older_failed_attempt(pg_sessions):
+    clock = FakeClock(datetime(2026, 9, 30, 8, tzinfo=timezone.utc))
+    with pg_sessions.begin() as db:
+        user = User(username="correction-replay", timezone="UTC")
+        db.add(user)
+        db.flush()
+        user_id = user.id
+
+    runtime = AgentRuntime(clock=clock)
+    with pg_sessions() as db:
+        runtime.handle(db, user_id, RuntimeEvent("correction-intro", "morning_briefing"))
+        conversation_id = db.scalar(select(Message.conversation_id))
+
+    for day, hour, prefix in [(1, 23, "older"), (2, 0, "latest")]:
+        clock.set(datetime(2026, 10, day, hour, 30, tzinfo=timezone.utc))
+        with pg_sessions() as db:
+            runtime.handle(
+                db,
+                user_id,
+                RuntimeEvent(
+                    f"{prefix}-prompt",
+                    "user_message",
+                    "review inchoate",
+                    conversation_id,
+                ),
+            )
+            runtime.handle(
+                db,
+                user_id,
+                RuntimeEvent(f"{prefix}-wrong", "user_message", "I don't know", conversation_id),
+            )
+
+    clock.set(datetime(2026, 10, 2, 1, tzinfo=timezone.utc))
+    correction = "self-correction: only partly in existence; imperfectly formed"
+    with pg_sessions() as db:
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("correction-first", "user_message", correction, conversation_id),
+        )
+        idempotent = runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("correction-first", "user_message", correction, conversation_id),
+        )
+        runtime.handle(
+            db,
+            user_id,
+            RuntimeEvent("correction-replay", "user_message", correction, conversation_id),
+        )
+        assert idempotent["idempotent"] is True
+
+    with pg_sessions() as db:
+        attempts = db.scalars(
+            select(VocabularyAttempt).order_by(VocabularyAttempt.reviewed_at)
+        ).all()
+        item = db.scalar(select(VocabularyItem))
+        replies = db.scalars(
+            select(Message.content).where(Message.role == "assistant").order_by(Message.ordinal)
+        ).all()
+        assert [attempt.correct for attempt in attempts] == [False, True]
+        assert (item.recall_attempts, item.correct_recalls, item.version) == (2, 1, 4)
+        assert replies[-1] == "That vocabulary attempt was already corrected."
+
+
+def test_concurrent_corrections_mutate_only_latest_failed_attempt_once(pg_sessions):
+    now = datetime(2026, 10, 2, 1, tzinfo=timezone.utc)
+    with pg_sessions.begin() as db:
+        user = User(username="correction-race", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        item = VocabularyItem(
+            user_id=user.id,
+            normalized_word="inchoate",
+            display_word="inchoate",
+            definition="only partly in existence; imperfectly formed",
+            natural_example="The proposal was still inchoate.",
+            introduced_at=now - timedelta(days=2),
+            introduced_local_date=(now - timedelta(days=2)).date(),
+            recall_attempts=2,
+            correct_recalls=0,
+            mastery_state="developing",
+            next_review_at=now + timedelta(days=1),
+            source="continuity-curated-lexicon",
+            source_version="2026-10-01",
+            policy_version="vocab-v1",
+            updated_at=now,
+            version=3,
+        )
+        source_events = [
+            AgentEvent(
+                user_id=user.id,
+                external_id=f"race-source-{index}",
+                kind="user_message",
+                request_fingerprint=f"race-source-{index}",
+                created_at=now - timedelta(hours=3 - index),
+            )
+            for index in range(2)
+        ]
+        db.add_all([conversation, item, *source_events])
+        db.flush()
+        db.add_all(
+            [
+                VocabularyAttempt(
+                    user_id=user.id,
+                    vocabulary_item_id=item.id,
+                    prompt="What does inchoate mean?",
+                    user_answer="I don't know",
+                    correct=False,
+                    reviewed_at=now - timedelta(hours=2 - index),
+                    review_window=f"2026-10-0{index + 1}:revisit",
+                    source_event_id=source_events[index].id,
+                    policy_version="vocab-v1",
+                    created_at=now - timedelta(hours=2 - index),
+                )
+                for index in range(2)
+            ]
+        )
+        user_id, conversation_id = user.id, conversation.id
+
+    rendezvous = Barrier(2)
+    correction = "self-correction: only partly in existence; imperfectly formed"
+
+    def correct(event_id: str):
+        with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
+            return AgentRuntime(clock=FakeClock(now)).handle(
+                db,
+                user_id,
+                RuntimeEvent(event_id, "user_message", correction, conversation_id),
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            future.result(timeout=10)
+            for future in [pool.submit(correct, "race-a"), pool.submit(correct, "race-b")]
+        ]
+
+    assert all(result["idempotent"] is False for result in results)
+    with pg_sessions() as db:
+        attempts = db.scalars(
+            select(VocabularyAttempt).order_by(VocabularyAttempt.reviewed_at)
+        ).all()
+        item = db.scalar(select(VocabularyItem))
+        replies = db.scalars(
+            select(Message.content).where(Message.role == "assistant").order_by(Message.ordinal)
+        ).all()
+        assert [attempt.correct for attempt in attempts] == [False, True]
+        assert (item.recall_attempts, item.correct_recalls, item.version) == (2, 1, 4)
+        assert replies.count("That vocabulary attempt was already corrected.") == 1
 
 
 def test_simultaneous_morning_and_evening_share_one_ordered_conversation(pg_sessions):

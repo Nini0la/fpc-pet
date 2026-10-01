@@ -15,13 +15,13 @@ M4 was implemented in vertical RED → GREEN slices. Representative observed fai
 | Migration | `reminders` table absent at Alembic head; M3-only states violated the restored M2 constraint on downgrade | explicit reversible `0004` backfills `last_touched_at`, applies the documented loss-aware state mapping, and passes real-data PostgreSQL downgrade/re-upgrade |
 | Concurrency | no M3 race coverage | real PostgreSQL proves one reminder under concurrent scans and suppression when completion wins the row-lock race |
 | M3 quality/security closure | unknown effort gained slack; fixed oldest-100 scans starved later rows; demonstrative/DST/effort bounds and tenant relationship enforcement were incomplete; scan/completion lock order could deadlock | unknown effort remains unknown, persistent keyset scanning is bounded and fair, all bounded demonstrative variants use unique surfaced resolution, wall times are fold/gap-safe, effort is bounded before conversion, conversation-first locking is race-tested, and composite tenant FKs reject cross-owner Reminder links |
-| M4 specification closure | early ordinary reviews created attempts; graded mistakes could not be corrected; raw latest-item substring reuse mishandled negation; concurrent due mornings incremented exposure twice | due-time gating with explicit revisit intent, 24-hour idempotent correction with preserved answer/provenance, clause-aware all-eligible reuse, and a forced PostgreSQL race proving one daily exposure increment |
+| M4 specification closure | early ordinary reviews created attempts; correction replay could walk backward from the latest corrected attempt; correction fields validated before trimming; raw latest-item substring reuse mishandled negation; concurrent due mornings incremented exposure twice | due-time gating with explicit revisit intent, correction bound to the absolute latest answered attempt with idempotent/concurrent replay coverage, trim-before-validation Unicode-safe correction fields, clause-aware all-eligible reuse, and forced PostgreSQL races proving single correction/exposure mutations |
 
 Tests were written and observed failing before their corresponding behavior. Documentation followed behavioral implementation.
 
 ## Delivered
 
-- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic due-gated review intervals/mastery, sentence retention, ambiguous-answer clarification, bounded idempotent correction of incorrect/ambiguous attempts with audit provenance, and weak-due priority.
+- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic due-gated review intervals/mastery, sentence retention, ambiguous-answer clarification, latest-attempt-bound 24-hour correction with replay/concurrency idempotency and audit provenance, trim-before-validation correction fields, and weak-due priority.
 - One structured morning vocabulary slot inside the existing briefing/message and a post-reflection active-recall prompt in the same chat, all through `AgentRuntime` with event/skill/provenance records and local-date idempotency.
 - Bounded tenant vocabulary/history APIs, CAS correction, content-scrubbing deletion tombstones, Today rendering, and reversible composite-tenant-safe Alembic `0006`.
 
@@ -34,13 +34,13 @@ Tests were written and observed failing before their corresponding behavior. Doc
 - Conversation-before-commitment PostgreSQL row locking, uniqueness, event fingerprints, bounded cursor-based fair scanning/retry, duplicate-scan safety, deterministic deadlock regression coverage, and completion-wins-race suppression. Retryable database conflicts roll back to a safe 409.
 - Bounded “I finished/completed that” and “done with that” variants, with optional “already”, resolve only a uniquely most-recently surfaced active commitment, record `completed_at`, and prevent future reminders; absent or tied surfaced candidates receive clarification with no mutation.
 - Live urgency in Today plus bounded, tenant-scoped `/api/reminders`; scheduled commitment checks validate aware intended instants and a 1–1440 minute catch-up window.
-- Explicit reversible Alembic `0004` and `0005`, including deterministic M3→M2 state mapping, `last_touched_at` backfill, fair-scan cursor persistence, and composite tenant-aware Reminder relationships; documentation updated for M3. No M4/M5/optional work was started.
+- Explicit reversible Alembic `0004` and `0005`, including deterministic M3→M2 state mapping, `last_touched_at` backfill, fair-scan cursor persistence, and composite tenant-aware Reminder relationships. M5 and optional work have not started.
 
 ## Verification
 
-- Full PostgreSQL-enabled backend run: `172 passed` in 732.18s, zero skips; the final matcher-case expansion then passed its current focused `16`-test M4 file.
-- Focused final concurrency/migration run: `4 passed`, covering ordinary and forced due-morning vocabulary idempotency, same-chat daily concurrency, and the reversible vocabulary migration.
-- Ruff and mypy pass. Frontend `7 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
+- Full PostgreSQL-enabled backend run: `185 passed` in 764.59s, zero skips.
+- Focused final correction/validation run: `10 passed`, covering two-failure replay, exact event idempotency, concurrent new-event corrections, each corrected API field, trim-aware bounds, and Unicode text.
+- Full-repository Ruff and mypy (`app` plus `tests`) pass. Frontend `7 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
 
 ## Known limits
 

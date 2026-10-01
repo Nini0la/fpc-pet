@@ -4,7 +4,7 @@ import re
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -245,10 +245,6 @@ class VocabularyLearningSkill:
                 .where(
                     VocabularyAttempt.user_id == user_id,
                     VocabularyAttempt.user_answer.is_not(None),
-                    or_(
-                        VocabularyAttempt.correct.is_(False),
-                        VocabularyAttempt.correct.is_(None),
-                    ),
                     VocabularyAttempt.reviewed_at >= now - CORRECTION_WINDOW,
                 )
                 .order_by(VocabularyAttempt.reviewed_at.desc(), VocabularyAttempt.id.desc())
@@ -277,6 +273,8 @@ class VocabularyLearningSkill:
         )
         if item is None:
             return False, None
+        if explicit_correction and attempt.correct is True:
+            return True, "That vocabulary attempt was already corrected."
         bounded = content.strip()[:MAX_ANSWER]
         sentence_match = re.search(r"(?:^|[.;]\s*)sentence:\s*(.+)$", bounded, re.I)
         sentence = sentence_match.group(1).strip()[:500] if sentence_match else None

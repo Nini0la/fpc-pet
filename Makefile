@@ -3,7 +3,7 @@ backend-install:
 backend-test:
 	cd backend && uv run pytest -q
 backend-check:
-	cd backend && uv run ruff check app tests && uv run mypy app
+	cd backend && uv run ruff check . && uv run mypy app tests
 frontend-install:
 	cd frontend && npm ci
 frontend-check:
