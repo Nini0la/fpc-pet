@@ -1,61 +1,33 @@
 "use client";
-
-import {FormEvent,useEffect,useState} from "react";
+import {FormEvent,useEffect,useRef,useState} from "react";
+import {api,ApiError} from "./api";
 import Chat,{type Message} from "./chat";
 import Today,{type TodayData} from "./today";
-import VocabularyHistory,{type VocabularyHistoryItem} from "./vocabulary-history";
+import Threads,{type ThreadItem} from "./threads";
+import History,{type TimelineItem} from "./history";
+import type {VocabularyHistoryItem} from "./vocabulary-history";
 
-const API=process.env.NEXT_PUBLIC_API_URL??"http://localhost:8000";
-
-async function fetchMessages():Promise<Message[]>{
-  const response=await fetch(`${API}/api/chat/messages`,{credentials:"include"});
-  if(!response.ok) throw new Error("Not authenticated");
-  return response.json();
-}
-async function fetchToday():Promise<TodayData>{
-  const response=await fetch(`${API}/api/today`,{credentials:"include"});
-  if(!response.ok) throw new Error("Unable to load Today");
-  return response.json();
-}
-async function fetchVocabulary():Promise<VocabularyHistoryItem[]>{
-  const response=await fetch(`${API}/api/vocabulary?limit=20&offset=0`,{credentials:"include"});
-  if(!response.ok) throw new Error("Unable to load vocabulary history");
-  return (await response.json()).items;
-}
+type View="chat"|"today"|"threads"|"history";
+type Preferences={timezone:string;morning_time:string;evening_time:string;onboarding_complete:boolean;version:number};
+const emptyToday:TodayData={local_date:"",briefing:null,vocabulary:null,power_list:[],open_commitments:[],resurfaced_items:[],evening_reflection:{status:"not_started",journal:null}};
+const nav:{id:View;label:string;icon:string}[]=[{id:"chat",label:"Chat",icon:"◌"},{id:"today",label:"Today",icon:"☀"},{id:"threads",label:"Threads",icon:"⌁"},{id:"history",label:"History",icon:"◷"}];
 
 export default function Page(){
-  const [ready,setReady]=useState(false);
-  const [messages,setMessages]=useState<Message[]>([]);
-  const [today,setToday]=useState<TodayData|null>(null);
-  const [vocabulary,setVocabulary]=useState<VocabularyHistoryItem[]>([]);
-  const [code,setCode]=useState("");
-
+  const [authenticated,setAuthenticated]=useState(false);const [loading,setLoading]=useState(true);const [view,setView]=useState<View>("chat");
+  const [messages,setMessages]=useState<Message[]>([]);const [today,setToday]=useState<TodayData>(emptyToday);const [,setVocabulary]=useState<VocabularyHistoryItem[]>([]);const [threads,setThreads]=useState<ThreadItem[]>([]);const [timeline,setTimeline]=useState<TimelineItem[]>([]);const [preferences,setPreferences]=useState<Preferences|null>(null);
+  const [code,setCode]=useState("");const [error,setError]=useState("");const [loginBusy,setLoginBusy]=useState(false);const [settingsOpen,setSettingsOpen]=useState(false);const mainRef=useRef<HTMLElement>(null);
+  async function load(){setLoading(true);setError("");try{const history=await api<Message[]>("/api/chat/messages");setMessages(history);const [todayData,vocabularyData]=await Promise.all([api<TodayData>("/api/today"),api<{items:VocabularyHistoryItem[]}>("/api/vocabulary?limit=20&offset=0")]);setToday(todayData);setVocabulary(vocabularyData.items);setAuthenticated(true);setLoading(false);const results=await Promise.allSettled([api<Preferences>("/api/preferences"),api<ThreadItem[]>("/api/threads"),api<{items:TimelineItem[]}>("/api/history/timeline?limit=50&offset=0")]);if(results[0].status==="fulfilled")setPreferences(results[0].value);if(results[1].status==="fulfilled")setThreads(results[1].value);if(results[2].status==="fulfilled")setTimeline(results[2].value.items);}catch(cause){setLoading(false);if(cause instanceof ApiError&&cause.status===401){setAuthenticated(false);return;}setError("We could not load your Continuity space. Your data is unchanged.");}}
   useEffect(()=>{
-    fetchMessages().then(async history=>{
-      setMessages(history);
-      setToday(await fetchToday());
-      setVocabulary(await fetchVocabulary());
-      setReady(true);
-    }).catch(()=>undefined);
+    // The initial request is the external synchronization performed by this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void load();
   },[]);
-
-  async function login(e:FormEvent){
-    e.preventDefault();
-    const response=await fetch(`${API}/api/auth/login`,{
-      method:"POST",
-      credentials:"include",
-      headers:{"content-type":"application/json"},
-      body:JSON.stringify({access_code:code,username:"owner"}),
-    });
-    if(response.ok){
-      const history=await fetchMessages();
-      setMessages(history);
-      setToday(await fetchToday());
-      setVocabulary(await fetchVocabulary());
-      setReady(true);
-    }
-  }
-
-  if(ready) return <><Today data={today!}/><VocabularyHistory items={vocabulary}/><Chat initialMessages={messages}/></>;
-  return <main><h1>Continuity</h1><form onSubmit={login}><label htmlFor="code">Access code</label><input id="code" type="password" value={code} onChange={e=>setCode(e.target.value)}/><button>Sign in</button></form></main>;
+  async function login(event:FormEvent){event.preventDefault();if(!code.trim())return;setLoginBusy(true);setError("");try{await api("/api/auth/login",{method:"POST",body:JSON.stringify({access_code:code,username:"owner"})});setCode("");await load();}catch{setError("Sign-in failed. Check the access code and try again.");setLoginBusy(false);}finally{setLoginBusy(false)}}
+  function expire(){setAuthenticated(false);setMessages([]);setError("Your session expired. Sign in again to continue.")}
+  async function reloadHistory(query?:string){try{const suffix=query?`?q=${encodeURIComponent(query)}&limit=50&offset=0`:"?limit=50&offset=0";const data=await api<{items:TimelineItem[]}>(`/api/history/timeline${suffix}`);setTimeline(data.items);}catch(cause){if(cause instanceof ApiError&&cause.status===401)expire();}}
+  function changeView(next:View){setView(next);requestAnimationFrame(()=>mainRef.current?.focus())}
+  if(!authenticated)return <main className="login-page"><section className="login-story"><a className="brand" href="#login"><span className="brand-mark">C</span> Continuity</a><div><span className="eyebrow">A personal AI with boundaries</span><h1>Your days, carried forward</h1><p className="lede">Continuity helps you keep promises, revisit ideas, and close each day without turning your life into a dashboard.</p><div className="principles"><article><strong>Selective memory</strong><span>Only explicit, useful details become durable memory.</span></article><article><strong>You stay in control</strong><span>Inspect, correct, or delete anything remembered.</span></article><article><strong>Private by design</strong><span>Access is session-based; no token is stored in your browser.</span></article></div><p className="privacy-note">Retention caveat: deleted content is removed from visible memory, while content-free audit metadata may be retained for safety.</p></div></section><section className="login-panel" id="login"><form className="login-card" onSubmit={login}><span className="brand-mark">C</span><h2>Welcome back</h2><p>Enter your private access code to continue.</p><label htmlFor="code">Access code</label><input id="code" type="password" autoComplete="current-password" maxLength={512} value={code} onChange={e=>setCode(e.target.value)} autoFocus/><button disabled={loginBusy||!code.trim()}>{loginBusy?"Signing in…":"Sign in"}</button>{loading&&<p className="status">Checking your session…</p>}{error&&<div role="alert" className="error-row"><span>{error}</span>{!loginBusy&&<button type="button" className="secondary" onClick={()=>load()}>Try again</button>}</div>}</form></section></main>;
+  return <div className="app-shell"><a href="#main-content" className="skip-link">Skip to content</a><aside className="sidebar"><a className="brand" href="#main-content"><span className="brand-mark">C</span><span>Continuity</span></a><nav aria-label="Primary">{nav.map(item=><button key={item.id} className={view===item.id?"nav-item active":"nav-item"} aria-current={view===item.id?"page":undefined} onClick={()=>changeView(item.id)}><span aria-hidden="true">{item.icon}</span><span>{item.label}</span></button>)}</nav><button className="profile-button" onClick={()=>setSettingsOpen(true)} aria-label="Open preferences"><span className="avatar">Y</span><span><strong>You</strong><small>{preferences?.timezone??"Personal space"}</small></span></button></aside><main id="main-content" className="content" tabIndex={-1} ref={mainRef}>{error&&<div role="alert" className="banner"><span>{error}</span><button className="secondary" onClick={()=>load()}>Try again</button></div>}{view==="chat"&&<Chat initialMessages={messages} onSessionExpired={expire}/>} {view==="today"&&<Today data={today} onSessionExpired={expire}/>} {view==="threads"&&<Threads items={threads} onSessionExpired={expire}/>} {view==="history"&&<History items={timeline} onReload={reloadHistory} onSessionExpired={expire}/>}</main>{preferences&&(!preferences.onboarding_complete||settingsOpen)&&<PreferencesDialog preferences={preferences} onClose={()=>setSettingsOpen(false)} onSaved={value=>{setPreferences(value);setSettingsOpen(false)}} onExpired={expire}/>}</div>;
 }
+
+function PreferencesDialog({preferences,onClose,onSaved,onExpired}:{preferences:Preferences;onClose:()=>void;onSaved:(value:Preferences)=>void;onExpired:()=>void}){const [error,setError]=useState("");const required=!preferences.onboarding_complete;async function submit(event:FormEvent<HTMLFormElement>){event.preventDefault();const form=new FormData(event.currentTarget);try{const result=await api<Preferences>("/api/preferences",{method:"PATCH",body:JSON.stringify({timezone:String(form.get("timezone")??"").trim(),morning_time:String(form.get("morning_time")),evening_time:String(form.get("evening_time")),onboarding_complete:true,version:preferences.version})});onSaved(result);}catch(cause){if(cause instanceof ApiError&&cause.status===401)onExpired();setError(cause instanceof ApiError&&cause.status===409?"Preferences changed elsewhere. Reload and try again.":"Check the timezone and times, then try again.")}}return <div className="modal-backdrop"><section className="modal onboarding" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><span className="eyebrow">{required?"One-minute setup":"Preferences"}</span><h2 id="preferences-title">Make Continuity yours</h2><p>Choose when your daily rhythm begins and ends. Use an IANA timezone such as Europe/London.</p><form onSubmit={submit}><label>Timezone<input name="timezone" defaultValue={preferences.timezone} maxLength={64} required/></label><div className="field-grid"><label>Morning time<input name="morning_time" type="time" defaultValue={preferences.morning_time} required/></label><label>Evening time<input name="evening_time" type="time" defaultValue={preferences.evening_time} required/></label></div>{error&&<p role="alert" className="error">{error}</p>}<div className="actions">{!required&&<button type="button" className="secondary" onClick={onClose}>Cancel</button>}<button>Save preferences</button></div></form></section></div>}

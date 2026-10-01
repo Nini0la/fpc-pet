@@ -23,7 +23,7 @@ describe("Today",()=>{
     expect(screen.getByRole("heading",{name:"Word of the Day"})).toBeInTheDocument();
     expect(screen.getByText("inchoate")).toBeInTheDocument();
     expect(screen.getByText(/only partly in existence/)).toBeInTheDocument();
-    expect(screen.getByText("Submit demo")).toBeInTheDocument();
+    expect(screen.getAllByText("Submit demo")).toHaveLength(2);
     expect(screen.getByText("deadline: Friday")).toBeInTheDocument();
     expect(screen.getByText("high urgency — score 87")).toBeTruthy();
     expect(screen.getByText("35h slack · 180 min effort")).toBeTruthy();

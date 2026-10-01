@@ -1,6 +1,6 @@
 # Architecture
 
-## Milestone 4 boundary
+## Milestone 5 boundary
 
 One FastAPI service and one Next.js app use PostgreSQL as production authority. SQLite remains limited to isolated API/unit tests. There is no broker, vector database, graph orchestration engine, or private FPC machinery. Conversation segmentation is internal; chat, morning briefings, and evening check-ins share one continuing relationship.
 
@@ -24,12 +24,12 @@ An evening answer is stored unchanged in `JournalEntry.original_content`, with o
 
 All durable records are UUID-owned by a user and tenant filters are mandatory. The current product model has exactly one persistent `ConversationSession` per user, enforced by a unique `user_id`. Creation is conflict-safe, and every message append locks that tenant-scoped conversation row before allocating the next ordinal. A unique `(conversation_id, ordinal)` constraint is the final ordering authority, so concurrent proactive and user-message transactions remain in one chat with distinct, strictly increasing, transaction-contiguous ordinals. Mutable threads, commitments, and episodes retain versioned correction/deletion behavior. Derived state has confidence, derivation, and `ProvenanceLink`; audit rows store observable action/reason metadata, not hidden chain-of-thought or prompts.
 
-`GET /api/today` returns only the authenticated user's local-day briefing, Power List, resurfaced items, reflection state, live commitment urgency, and stable oldest-first slices of open commitments and active threads. Each state slice is capped at 50; `collection_meta` supplies `limit`, `returned_count`, `total_count`, and `has_more`. Persisted briefing collection sections are also capped at 50 and include equivalent metadata for commitments and threads. `GET /api/history/journals` and `GET /api/reminders` are tenant-scoped with bounded query/pagination. `GET /api/vocabulary` and per-item attempts use 1–100 row pages and a maximum offset of 10,000. The Next.js page renders the active vocabulary slot on the minimal Today surface alongside chat; full navigation/polish remains M5.
+`GET /api/today` returns only the authenticated user's local-day briefing, Power List, resurfaced items, reflection state, live commitment urgency, and stable oldest-first slices of open commitments and active threads. Each state slice is capped at 50; `collection_meta` supplies `limit`, `returned_count`, `total_count`, and `has_more`. `GET /api/preferences` plus its CSRF-protected PATCH expose versioned timezone and daily-rhythm settings. `GET /api/history/timeline` merges only observable, tenant-owned Episodes, journals, threads, commitments, vocabulary, AgentEvent metadata, and assistant messages into a time-ordered 1–100 item page; it never emits request fingerprints or hidden reasoning. Existing journal, reminder, vocabulary, and attempt APIs remain bounded to offset 10,000.
 
 PostgreSQL is migrated with explicit Alembic revisions. `0001` is the M1 foundation; `0002` adds the daily loop; reversible `0003` establishes conversation concurrency invariants; reversible `0004` adds normalized commitment timing/effort/urgency fields and Reminder persistence; reversible `0005` adds the fair-scan cursor plus composite tenant-aware Reminder foreign keys to commitments, threads, surfaced messages, and source events. The composite constraints preserve existing valid rows while rejecting cross-tenant relationship IDs at the persistence boundary. Before restoring the M2 state constraint, `0004` downgrade applies the documented loss-aware mapping `in_progress|waiting → open`, `completed → complete`, and `cancelled → abandoned`; already-M2-valid states are unchanged. Re-upgrade preserves those mapped valid states.
 
-Reversible `0006` adds vocabulary items/attempts, constraints, indexes, and composite tenant-safe foreign keys.
+Reversible `0006` adds vocabulary items/attempts, constraints, indexes, and composite tenant-safe foreign keys. Reversible `0007` adds CAS user preferences and the description/state/importance/deadline/next-action/watch thread surface.
 
 ## Deferred
 
-M5 full Today/Threads/History polish, M6 discovery/integrations, and a production model adapter are out of scope.
+M6 discovery/integrations and a production model adapter are out of scope.

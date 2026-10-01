@@ -6,11 +6,12 @@ import os
 import secrets
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, NoReturn
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy import create_engine, func, or_, select, update
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
@@ -18,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, RuntimeEvent
 from .daily import POLICY_VERSION, local_date_for
 from .models import (
+    AgentEvent,
     Base,
     Commitment,
     DailyBriefing,
@@ -177,6 +179,66 @@ def me(user: User = Depends(current_user)):
     return {"id": user.id, "username": user.username}
 
 
+def preference_dict(user: User) -> dict[str, Any]:
+    return {
+        "timezone": user.timezone,
+        "morning_time": user.morning_time,
+        "evening_time": user.evening_time,
+        "onboarding_complete": user.onboarding_complete,
+        "version": user.version,
+    }
+
+
+class PreferencesIn(BaseModel):
+    timezone: str = Field(min_length=1, max_length=64)
+    morning_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    evening_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    onboarding_complete: bool
+    version: int = Field(ge=1)
+
+    @field_validator("timezone", mode="before")
+    @classmethod
+    def valid_timezone(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("must be an IANA timezone") from error
+        return value
+
+
+@app.get("/api/preferences")
+def preferences(user: User = Depends(current_user)):
+    return preference_dict(user)
+
+
+@app.patch("/api/preferences", dependencies=[Depends(mutation_guard)])
+def update_preferences(
+    body: PreferencesIn,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    result = db.execute(
+        update(User)
+        .where(User.id == user.id, User.version == body.version)
+        .values(
+            timezone=body.timezone,
+            morning_time=body.morning_time,
+            evening_time=body.evening_time,
+            onboarding_complete=body.onboarding_complete,
+            version=body.version + 1,
+        )
+    )
+    if getattr(result, "rowcount", 0) != 1:
+        db.rollback()
+        raise HTTPException(409, "Version conflict")
+    db.commit()
+    db.refresh(user)
+    return preference_dict(user)
+
+
 @app.post("/api/auth/logout", status_code=204, dependencies=[Depends(mutation_guard)])
 def logout(
     request: Request,
@@ -229,8 +291,30 @@ def messages(db: DBSession = Depends(db_session), user: User = Depends(current_u
         .where(Message.user_id == user.id)
         .order_by(Message.ordinal, Message.created_at, Message.id)
     ).all()
+    proactive_ids = {
+        message_id
+        for message_id in (
+            *db.scalars(
+                select(DailyBriefing.message_id).where(DailyBriefing.user_id == user.id)
+            ).all(),
+            *db.scalars(
+                select(ReflectionPrompt.message_id).where(ReflectionPrompt.user_id == user.id)
+            ).all(),
+            *db.scalars(
+                select(Reminder.surfaced_message_id).where(Reminder.user_id == user.id)
+            ).all(),
+        )
+        if message_id is not None
+    }
     return [
-        {"id": x.id, "role": x.role, "content": x.content, "created_at": x.created_at} for x in rows
+        {
+            "id": item.id,
+            "role": item.role,
+            "content": item.content,
+            "created_at": item.created_at,
+            "proactive": item.id in proactive_ids,
+        }
+        for item in rows
     ]
 
 
@@ -299,14 +383,34 @@ class Correction(BaseModel):
     version: int = Field(ge=1)
 
 
+class ThreadCorrection(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    description: str | None = Field(default=None, max_length=2000)
+    state: str | None = Field(
+        default=None, pattern=r"^(active|exploring|waiting|dormant|completed|abandoned)$"
+    )
+    importance: int | None = Field(default=None, ge=0, le=3)
+    deadline: date | None = None
+    next_action: str | None = Field(default=None, max_length=500)
+    watch: bool | None = None
+    version: int = Field(ge=1)
+
+    @field_validator("title", "description", "next_action", mode="before")
+    @classmethod
+    def trim_text(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
 @app.patch("/api/threads/{id}", dependencies=[Depends(mutation_guard)])
 def correct_thread(
     id: str,
-    body: Correction,
+    body: ThreadCorrection,
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    require_mutation(atomic_update(db, Thread, id, user.id, body.version, {"title": body.title}))
+    values = {"title": body.title}
+    values.update(body.model_dump(exclude={"title", "version"}, exclude_none=True))
+    require_mutation(atomic_update(db, Thread, id, user.id, body.version, values))
     db.add(
         ProvenanceLink(
             user_id=user.id,
@@ -566,13 +670,18 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             DailyBriefing.policy_version == POLICY_VERSION,
         )
     )
-    open_total = db.scalar(
-        select(func.count()).select_from(Commitment).where(
-            Commitment.user_id == user.id,
-            Commitment.deleted.is_(False),
-            Commitment.state == "open",
+    open_total = (
+        db.scalar(
+            select(func.count())
+            .select_from(Commitment)
+            .where(
+                Commitment.user_id == user.id,
+                Commitment.deleted.is_(False),
+                Commitment.state == "open",
+            )
         )
-    ) or 0
+        or 0
+    )
     open_items = db.scalars(
         select(Commitment)
         .where(
@@ -583,13 +692,18 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
         .order_by(Commitment.created_at, Commitment.id)
         .limit(TODAY_COLLECTION_LIMIT)
     ).all()
-    active_total = db.scalar(
-        select(func.count()).select_from(Thread).where(
-            Thread.user_id == user.id,
-            Thread.deleted.is_(False),
-            Thread.state == "active",
+    active_total = (
+        db.scalar(
+            select(func.count())
+            .select_from(Thread)
+            .where(
+                Thread.user_id == user.id,
+                Thread.deleted.is_(False),
+                Thread.state == "active",
+            )
         )
-    ) or 0
+        or 0
+    )
     active_threads = db.scalars(
         select(Thread)
         .where(
@@ -659,6 +773,85 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             "journal": item_dict(journal) if journal else None,
         },
     }
+
+
+@app.get("/api/history/timeline")
+def history_timeline(
+    q: str | None = Query(default=None, min_length=1, max_length=500),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    take = min(limit + offset + 1, 10_101)
+    entries: list[dict[str, Any]] = []
+
+    def add(kind: str, row: Any, content: str, actor: str, *, editable: bool = False) -> None:
+        entries.append(
+            {
+                "id": row.id,
+                "kind": kind,
+                "content": content,
+                "actor": actor,
+                "created_at": row.created_at,
+                "version": getattr(row, "version", None),
+                "editable": editable,
+                "provenance_target_id": row.id if editable else None,
+            }
+        )
+
+    episode_query = select(Episode).where(Episode.user_id == user.id, Episode.deleted.is_(False))
+    journal_query = select(JournalEntry).where(JournalEntry.user_id == user.id)
+    thread_query = select(Thread).where(Thread.user_id == user.id, Thread.deleted.is_(False))
+    commitment_query = select(Commitment).where(
+        Commitment.user_id == user.id, Commitment.deleted.is_(False)
+    )
+    vocabulary_query = select(VocabularyItem).where(
+        VocabularyItem.user_id == user.id, VocabularyItem.deleted.is_(False)
+    )
+    if q:
+        episode_query = episode_query.where(Episode.summary.icontains(q, autoescape=True))
+        journal_query = journal_query.where(
+            JournalEntry.original_content.icontains(q, autoescape=True)
+        )
+        thread_query = thread_query.where(Thread.title.icontains(q, autoescape=True))
+        commitment_query = commitment_query.where(Commitment.title.icontains(q, autoescape=True))
+        vocabulary_query = vocabulary_query.where(
+            or_(
+                VocabularyItem.display_word.icontains(q, autoescape=True),
+                VocabularyItem.definition.icontains(q, autoescape=True),
+            )
+        )
+    for episode in db.scalars(episode_query.limit(take)):
+        add("episode", episode, episode.summary, episode.actor, editable=True)
+    for journal in db.scalars(journal_query.limit(take)):
+        add("journal", journal, journal.original_content, "user")
+    for thread in db.scalars(thread_query.limit(take)):
+        add("thread", thread, thread.title, "joint", editable=True)
+    for commitment in db.scalars(commitment_query.limit(take)):
+        add("commitment", commitment, commitment.title, "joint", editable=True)
+    for vocabulary in db.scalars(vocabulary_query.limit(take)):
+        add(
+            "vocabulary",
+            vocabulary,
+            f"{vocabulary.display_word} — {vocabulary.definition}",
+            "joint",
+            editable=True,
+        )
+    if not q:
+        for event in db.scalars(
+            select(AgentEvent).where(AgentEvent.user_id == user.id).limit(take)
+        ):
+            add("agent_event", event, f"{event.kind}: {event.status}", "assistant")
+        for message in db.scalars(
+            select(Message)
+            .where(Message.user_id == user.id, Message.role == "assistant")
+            .limit(take)
+        ):
+            add("assistant_action", message, message.content, "assistant")
+    entries.sort(key=lambda item: (item["created_at"], item["id"]), reverse=True)
+    page = entries[offset : offset + limit]
+    return {"items": page, "has_more": len(entries) > offset + limit}
 
 
 @app.get("/api/history/journals")

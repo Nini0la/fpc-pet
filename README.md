@@ -1,8 +1,16 @@
-# Continuity — Milestone 4
+# Continuity — Milestone 5
 
 A narrow personal-AI prototype that carries explicit commitments, threads, shared episodes, and a daily morning/evening loop forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
 
-## What M4 adds
+## What M5 adds
+
+- A responsive, keyboard-accessible personal workspace with exactly four product areas: Chat, Today, Threads, and History. Mobile uses the same semantic primary navigation as desktop, repositioned as a 44px-target bottom bar.
+- Access-code sign-in, a first-run selective-memory/privacy explanation, and versioned timezone plus morning/evening preference setup.
+- Persistent chat chronology with timestamps, proactive markers, safe optimistic reconciliation, visible 401/network/server handling, and retry without fake token streaming.
+- Reason-bearing Today cards and authorized, idempotent morning/evening triggers; grouped editable Threads with CAS conflict handling; and a bounded searchable History timeline with actor attribution, provenance inspection, and confirmed deletion.
+- Alembic `0007` adds user preferences and inspectable thread fields. `/api/preferences` and `/api/history/timeline` are tenant scoped and bounded.
+
+M4 vocabulary and M1–M3 continuity behavior remains available:
 
 - A tenant-owned longitudinal vocabulary record and attempt history, backed by a versioned curated lexicon beginning with **inchoate**. Definitions and examples are source data, never model inventions.
 - The deterministic `VocabularyLearningSkill` uses the same `AgentRuntime.handle` path as chat and scheduled events. Morning briefings contain one structured learning slot: the weakest due word wins; a new word appears only when no weak word is due.
@@ -38,4 +46,4 @@ Production fails closed unless the database URL, access code, a 32+ character se
 
 `make check` runs backend tests/lint/types and frontend tests/audit/lint/types/build. The PostgreSQL suite is enabled by setting `POSTGRES_TEST_URL`; CI runs it against PostgreSQL 16.
 
-See `docs/ARCHITECTURE.md`, `docs/SECURITY_PRIVACY.md`, and `docs/IMPLEMENTATION_STATUS.md`.
+See `docs/RUNBOOK.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY_PRIVACY.md`, and `docs/IMPLEMENTATION_STATUS.md`.

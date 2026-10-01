@@ -35,6 +35,79 @@ def csrf(client):
     return {"origin": "http://testserver", "x-csrf-token": client.cookies.get("csrf_token")}
 
 
+def test_preferences_are_validated_trimmed_cas_and_tenant_scoped(client):
+    assert login(client).status_code == 200
+    initial = client.get("/api/preferences").json()
+    assert initial == {
+        "timezone": "UTC", "morning_time": "08:00", "evening_time": "20:00",
+        "onboarding_complete": False, "version": 1,
+    }
+    response = client.patch("/api/preferences", json={
+        "timezone": " Africa/Lagos ", "morning_time": "07:30", "evening_time": "21:15",
+        "onboarding_complete": True, "version": 1,
+    }, headers=csrf(client))
+    assert response.status_code == 200
+    assert response.json()["timezone"] == "Africa/Lagos"
+    assert client.patch("/api/preferences", json={
+        **response.json(), "timezone": "Not/AZone", "version": 2,
+    }, headers=csrf(client)).status_code == 422
+    assert client.patch("/api/preferences", json={
+        **response.json(), "version": 1,
+    }, headers=csrf(client)).status_code == 409
+    client.post("/api/auth/logout", headers=csrf(client))
+    assert login(client, username="bob").status_code == 200
+    assert client.get("/api/preferences").json()["timezone"] == "UTC"
+
+
+def test_thread_full_correction_supports_states_and_cas(client):
+    login(client)
+    client.post("/api/chat/messages", json={
+        "content": "I'm considering local inference", "event_id": "thread-ui",
+    }, headers=csrf(client))
+    item = client.get("/api/threads").json()[0]
+    response = client.patch(f"/api/threads/{item['id']}", json={
+        "title": " Local inference lab ", "description": " Explore small models ",
+        "state": "waiting", "importance": 3, "deadline": "2026-12-10",
+        "next_action": "Benchmark one model", "watch": True, "version": item["version"],
+    }, headers=csrf(client))
+    assert response.status_code == 200
+    updated = response.json()
+    keys = ("title", "description", "state", "importance", "deadline", "next_action", "watch")
+    assert {key: updated[key] for key in keys} == {
+        "title": "Local inference lab", "description": "Explore small models",
+        "state": "waiting", "importance": 3, "deadline": "2026-12-10",
+        "next_action": "Benchmark one model", "watch": True,
+    }
+    assert client.patch(f"/api/threads/{item['id']}", json={
+        **response.json(), "version": item["version"],
+    }, headers=csrf(client)).status_code == 409
+
+
+def test_history_timeline_is_bounded_searchable_and_tenant_scoped(client):
+    login(client)
+    client.post("/api/episodes", json={
+        "summary": "We mapped the launch plan", "actor": "joint",
+    }, headers=csrf(client))
+    timeline = client.get("/api/history/timeline", params={"q": "launch", "limit": 1}).json()
+    assert timeline["items"][0]["kind"] == "episode"
+    assert timeline["items"][0]["actor"] == "joint"
+    assert timeline["items"][0]["editable"] is True
+    assert client.get("/api/history/timeline", params={"limit": 101}).status_code == 422
+    client.post("/api/auth/logout", headers=csrf(client))
+    login(client, username="bob")
+    assert client.get("/api/history/timeline", params={"q": "launch"}).json()["items"] == []
+
+
+def test_chat_marks_scheduled_messages_as_proactive(client):
+    login(client)
+    response = client.post("/api/events/scheduled", json={
+        "event_id": "proactive-morning", "kind": "morning_briefing",
+    }, headers=csrf(client))
+    assert response.status_code == 202
+    messages = client.get("/api/chat/messages").json()
+    assert any(message["role"] == "assistant" and message["proactive"] for message in messages)
+
+
 def test_retryable_database_conflict_returns_409_instead_of_500(client, monkeypatch):
     import app.main
 

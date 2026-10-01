@@ -1,47 +1,31 @@
-# Implementation status — Milestone 4
-
-## TDD evidence
-
-M4 was implemented in vertical RED → GREEN slices. Representative observed failures included missing vocabulary models, an absent Today vocabulary section, and an explicit self-correction that initially left an ambiguous attempt ungraded; each received the minimum implementation before the next slice. Representative observed failures before implementation:
-
-| Slice | RED | GREEN |
-|---|---|---|
-| Temporal schema and parsing | `Reminder` import missing; normalized fields absent; invalid explicit ISO dates/clocks raised `ValueError` | commitment timing/effort fields, Reminder model, explicit weekday/ISO parsing, ambiguity, timezone and end-of-local-day policy pass; invalid recognized values preserve source, store no deadline, and clarify |
-| Runtime extraction | title retained date/effort prose and ambiguity was lost | chat persists normalized deadline, granularity, source phrase, effort, and clarification; named follow-up effort updates use CAS |
-| Urgency | Monday/Thursday policy and exact factors absent; inactivity used immutable creation time | deterministic low/medium/high score exposes deadline, effort, slack, importance, truthful `last_touched_at` inactivity, blockers, and stored availability |
-| Prospective runtime | `commitment_check` returned no surfaced count and wrote nothing | no-op then surfacing produces one atomic same-chat Reminder/message/Episode/event/skill/provenance bundle |
-| Suppression/replies | completion timestamp absent and generic `that` resolution ignored surfacing; unsurfaced records could be selected by fallback | terminal/deleted/ambiguous records are suppressed; only a unique latest surfaced active commitment completes; absent/tied candidates ask clarification without mutation |
-| API/scheduling | Today had no urgency; intended window inputs were ignored | Today urgency, bounded tenant Reminder API, and validated timezone-aware catch-up windows pass |
-| Migration | `reminders` table absent at Alembic head; M3-only states violated the restored M2 constraint on downgrade | explicit reversible `0004` backfills `last_touched_at`, applies the documented loss-aware state mapping, and passes real-data PostgreSQL downgrade/re-upgrade |
-| Concurrency | no M3 race coverage | real PostgreSQL proves one reminder under concurrent scans and suppression when completion wins the row-lock race |
-| M3 quality/security closure | unknown effort gained slack; fixed oldest-100 scans starved later rows; demonstrative/DST/effort bounds and tenant relationship enforcement were incomplete; scan/completion lock order could deadlock | unknown effort remains unknown, persistent keyset scanning is bounded and fair, all bounded demonstrative variants use unique surfaced resolution, wall times are fold/gap-safe, effort is bounded before conversion, conversation-first locking is race-tested, and composite tenant FKs reject cross-owner Reminder links |
-| M4 specification closure | early ordinary reviews created attempts; correction replay could walk backward from the latest corrected attempt; correction fields validated before trimming; raw latest-item substring reuse mishandled negation; concurrent due mornings incremented exposure twice | due-time gating with explicit revisit intent, correction bound to the absolute latest answered attempt with idempotent/concurrent replay coverage, trim-before-validation Unicode-safe correction fields, clause-aware all-eligible reuse, and forced PostgreSQL races proving single correction/exposure mutations |
-
-Tests were written and observed failing before their corresponding behavior. Documentation followed behavioral implementation.
+# Implementation status — Milestone 5
 
 ## Delivered
 
-- Tenant-owned `VocabularyItem`/`VocabularyAttempt`, curated `vocab-v1` lexicon, deterministic due-gated review intervals/mastery, sentence retention, ambiguous-answer clarification, latest-attempt-bound 24-hour correction with replay/concurrency idempotency and audit provenance, trim-before-validation correction fields, and weak-due priority.
-- One structured morning vocabulary slot inside the existing briefing/message and a post-reflection active-recall prompt in the same chat, all through `AgentRuntime` with event/skill/provenance records and local-date idempotency.
-- Bounded tenant vocabulary/history APIs, CAS correction, content-scrubbing deletion tombstones, Today rendering, and reversible composite-tenant-safe Alembic `0006`.
+- Warm, mobile-first Next.js shell with Chat, Today, Threads, and History as the only product navigation. It includes semantic landmarks/headings/forms, a skip link, focus rings, 44px controls, reduced-motion support, long-content wrapping, and a desktop side rail that becomes a mobile bottom bar.
+- Access-code login and first-run onboarding explain selective memory, inspect/correct/delete controls, session privacy, and the retention caveat. Users configure a validated IANA timezone and morning/evening times through tenant-scoped CAS preferences.
+- Chat preserves server chronology across login/reload, renders timestamps/proactive labels, safely reconciles optimistic messages from authoritative history, and exposes 401/network/server errors with retry. It does not simulate streaming.
+- Today presents only API-backed briefing, reason-bearing Power List, bounded urgent commitments, vocabulary state, resurfaced items, and reflection state. Morning/evening controls use the existing authorized idempotent event API.
+- Threads filters active/exploring/waiting/dormant/completed/abandoned state and edits trimmed description, state, importance, deadline, next action, and watch fields using versioned CAS. Stale writes surface as conflicts.
+- History provides a bounded/searchable tenant timeline of Episodes, journals, Threads, Commitments, observable AgentEvent metadata, vocabulary, and assistant messages. Actor attribution, provenance lookup, confirmation, and CAS deletion are visible; deleted records remain excluded.
+- Reversible Alembic `0007`, backend isolation/bounds/CAS tests, and frontend loading/error/navigation/correction/confirmation/accessibility-name tests accompany the feature.
 
-- Commitment temporal/effort/importance/relevance/surfacing/ambiguity/dependency/availability/thread/completion fields without filling unknown values.
-- Tenant-owned Reminder with reason code, factor-only metadata, lifecycle/retry state, commitment/thread/message/event links, and one-per-window/policy uniqueness.
-- Bounded explicit weekday, `next weekday`, ISO date/time, numeric-date ambiguity, and word/digit effort parsing using injected time and IANA timezone. Effort accepts 1 minute through 7 days and is rejected before unbounded integer conversion. Date-only deadlines preserve granularity/source and use local 23:59:59 for urgency; recognized invalid ISO dates/clocks and nonexistent/ambiguous local wall times preserve the original source, never guess `due_at`, and request clarification. Explicit UTC offsets disambiguate folds.
-- Interpretable `m3-v1` urgency/slack service. `last_touched_at` is initialized/backfilled deterministically, refreshed by meaningful commitment mutations (including evening completion, explicit unfinished touches, and priority changes), and left unchanged by no-op extraction and read-only scans; advancing Monday to Thursday increases urgency solely as deadline slack shrinks.
-- `ProspectiveReminderSkill` and periodic `commitment_check` through `AgentRuntime.handle`; authoritative state is selected under the conversation-first lock order and rechecked before surfacing.
-- Atomic proactive message, Reminder, Episode, SkillRun, AgentEvent, provenance, and exact true-factor explanation in the persistent chat.
-- Conversation-before-commitment PostgreSQL row locking, uniqueness, event fingerprints, bounded cursor-based fair scanning/retry, duplicate-scan safety, deterministic deadlock regression coverage, and completion-wins-race suppression. Retryable database conflicts roll back to a safe 409.
-- Bounded “I finished/completed that” and “done with that” variants, with optional “already”, resolve only a uniquely most-recently surfaced active commitment, record `completed_at`, and prevent future reminders; absent or tied surfaced candidates receive clarification with no mutation.
-- Live urgency in Today plus bounded, tenant-scoped `/api/reminders`; scheduled commitment checks validate aware intended instants and a 1–1440 minute catch-up window.
-- Explicit reversible Alembic `0004` and `0005`, including deterministic M3→M2 state mapping, `last_touched_at` backfill, fair-scan cursor persistence, and composite tenant-aware Reminder relationships. M5 and optional work have not started.
+## TDD evidence
 
-## Verification
+Milestone 5 used vertical RED → GREEN slices. The first backend run observed three expected failures: missing `/api/preferences`, missing thread detail fields, and missing `/api/history/timeline`; all three passed after minimal tenant-scoped implementations. The first frontend run failed module resolution for the not-yet-created Threads/History views; component and shell implementations then made the focused suite green. Subsequent full-suite failures exposed compatibility expectations and lint/type issues, which were corrected before final verification.
 
-- Full PostgreSQL-enabled backend run: `185 passed` in 764.59s, zero skips.
-- Focused final correction/validation run: `10 passed`, covering two-failure replay, exact event idempotency, concurrent new-event corrections, each corrected API field, trim-aware bounds, and Unicode text.
-- Full-repository Ruff and mypy (`app` plus `tests`) pass. Frontend `7 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
+## Security posture
+
+Production still fails closed without database URL, access code, 32+ character session secret, exact CORS origins, and a real model adapter. Session tokens remain HttpOnly cookies; mutations keep Origin and CSRF enforcement. React uses escaped text only, History excludes request fingerprints and hidden reasoning, all new reads/writes derive the tenant from the session, and all pages/fields are bounded.
 
 ## Known limits
 
-Vocabulary grading is deliberately conservative exact normalized matching, not semantic evaluation; ambiguous prose requires clarification or explicit self-correction. Contextual reuse is limited to one optional deterministic `inchoate` template for an allowlist of affirmative “still an early draft/rough idea” or “not fully formed” clauses; negated and contrast clauses are excluded. The curated lexicon is intentionally small and versioned in source. Full Today/History navigation polish remains M5, external job orchestration remains deployment-owned, and the deterministic model adapter remains development/test-only.
+- No live Nebius/Nemotron provider is claimed; deterministic mode remains development/test only.
+- No M6 discovery, Jev, calendar, or external integrations were added.
+- Backend chat is request/response, so the UI truthfully shows pending state rather than fake token streaming.
+- Journal rows are visible/searchable but are not editable/deletable until they have a versioned correction model.
+- Browser screenshots were not fabricated or added. Final visual dogfood is expected from the parent environment.
+
+## Verification
+
+See the final commit report and `docs/RUNBOOK.md` for exact commands and observed totals. The required gate is backend pytest/Ruff/mypy plus frontend audit/lint/typecheck/tests/build; the PostgreSQL subset requires `POSTGRES_TEST_URL` and must report zero skips when the service is available.

@@ -47,7 +47,7 @@ describe("Page",()=>{
 
     expect(await screen.findByText("Earlier question")).toBeInTheDocument();
     expect(screen.getByText("Earlier answer")).toBeInTheDocument();
-    await waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(5));
+    await waitFor(()=>expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5));
     expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages");
     expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8000/api/today");
     expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8000/api/vocabulary?limit=20&offset=0");
@@ -70,6 +70,8 @@ describe("Page",()=>{
 
     render(<Page/>);
 
+    const todayButton=await screen.findByRole("button",{name:"Today"});
+    fireEvent.click(todayButton);
     expect(await screen.findByRole("heading",{name:"Today"})).toBeInTheDocument();
     expect(screen.getByText("Morning continuity")).toBeInTheDocument();
   });

@@ -43,6 +43,10 @@ class User(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    morning_time: Mapped[str] = mapped_column(String(5), default="08:00")
+    evening_time: Mapped[str] = mapped_column(String(5), default="20:00")
+    onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -63,9 +67,7 @@ class ConversationSession(Owned, Base):
         DateTime(timezone=True), nullable=True
     )
     reminder_scan_cursor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    __table_args__ = (
-        UniqueConstraint("user_id", name="uq_conversation_sessions_user_id"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", name="uq_conversation_sessions_user_id"),)
 
 
 class Message(Owned, Base):
@@ -85,14 +87,22 @@ class Message(Owned, Base):
 class Thread(Owned, Base):
     __tablename__ = "threads"
     title: Mapped[str] = mapped_column(Text)
+    description: Mapped[str] = mapped_column(Text, default="")
     state: Mapped[str] = mapped_column(String(20), default="active")
+    importance: Mapped[int] = mapped_column(Integer, default=0)
+    deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    watch: Mapped[bool] = mapped_column(Boolean, default=False)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     derivation: Mapped[str] = mapped_column(String(100))
     version: Mapped[int] = mapped_column(Integer, default=1)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     __table_args__ = (
-        CheckConstraint("state in ('active','dormant','abandoned')"),
+        CheckConstraint(
+            "state in ('active','exploring','waiting','dormant','completed','abandoned')"
+        ),
+        CheckConstraint("importance between 0 and 3"),
         UniqueConstraint("user_id", "id", name="uq_threads_user_id_id"),
     )
 
@@ -118,9 +128,7 @@ class Commitment(Owned, Base):
     ambiguity: Mapped[str] = mapped_column(String(50), default="none")
     dependencies: Mapped[list] = mapped_column(JSON, default=list)
     available_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    related_thread_id: Mapped[str | None] = mapped_column(
-        ForeignKey("threads.id"), nullable=True
-    )
+    related_thread_id: Mapped[str | None] = mapped_column(ForeignKey("threads.id"), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
     derivation: Mapped[str] = mapped_column(String(100))
@@ -339,7 +347,10 @@ class VocabularyAttempt(Owned, Base):
     policy_version: Mapped[str] = mapped_column(String(30))
     __table_args__ = (
         UniqueConstraint(
-            "user_id", "vocabulary_item_id", "review_window", "policy_version",
+            "user_id",
+            "vocabulary_item_id",
+            "review_window",
+            "policy_version",
             name="uq_vocabulary_attempt_window",
         ),
         ForeignKeyConstraint(
