@@ -4,14 +4,18 @@
 
 - Warm, mobile-first Next.js shell with Chat, Today, Threads, and History as the only product navigation. It includes semantic landmarks/headings/forms, a skip link, focus rings, 44px controls, reduced-motion support, long-content wrapping, and a desktop side rail that becomes a mobile bottom bar.
 - Access-code login and first-run onboarding explain selective memory, inspect/correct/delete controls, session privacy, and the retention caveat. Users configure a validated IANA timezone and morning/evening times through tenant-scoped CAS preferences.
-- Chat preserves server chronology across login/reload, renders timestamps/proactive labels, safely reconciles optimistic messages from authoritative history, and exposes 401/network/server errors with retry. It does not simulate streaming.
+- Chat loads the newest bounded page in chronological order across login/reload/reconciliation,
+  renders timestamps/proactive labels, safely reconciles optimistic messages from authoritative
+  history, and exposes 401/network/server errors with retry. Accessible earlier-history loading
+  prepends stable keyset pages without duplicates. It does not simulate streaming.
 - Today presents only API-backed briefing, reason-bearing Power List, bounded urgent commitments, vocabulary state, resurfaced items, and reflection state. Morning/evening controls use the existing authorized idempotent event API.
 - Threads filters active/exploring/waiting/dormant/completed/abandoned state and edits trimmed description, state, importance, deadline, next action, and watch fields using versioned CAS. Stale writes surface as conflicts.
 - History provides a bounded/searchable tenant timeline of Episodes, journals, Threads, Commitments, observable AgentEvent metadata, vocabulary, and assistant messages. Actor attribution, provenance lookup, confirmation, and CAS deletion are visible; deleted records remain excluded.
 - Reversible Alembic `0007` maps `exploring`/`waiting` to `active` and `completed` to
   `dormant` before restoring the M4 constraint. `0008` adds versioned journal controls.
 - Chat retries preserve one event ID through uncertain delivery and reconcile accepted
-  sends before replay. Collection reads are bounded and expose opaque keyset cursors.
+  sends before replay. The latest-page response includes truthful count/continuation metadata,
+  while the original forward collection contract remains compatible.
 - Timeline source projections are ordered before a global merge; event and assistant
   metadata participate in search, and actors come from record provenance semantics.
 - Reusable dialogs trap Tab, close on Escape when allowed, focus their first control, and
@@ -38,7 +42,8 @@ Production still fails closed without database URL, access code, 32+ character s
 ## Verification
 
 See `docs/RUNBOOK.md` for commands. Final verification on the disposable PostgreSQL 16
-service at port 55432 completed with **192 passed, zero skipped**; this includes the
-populated 0007 down/up cycle plus migration, race, API, pagination, and tenant-isolation
-coverage. Ruff and mypy passed. Frontend verification completed with **15 passed**, zero
-high-severity audit findings, clean ESLint/TypeScript, and a successful production build.
+service at port 55432 completed with **196 passed, zero skipped**; this includes the
+populated 0007 down/up cycle plus migration, race, API, latest/older chat pagination,
+and tenant-isolation coverage. Ruff and mypy passed. Frontend verification completed
+with **17 passed**, zero high-severity audit findings, clean ESLint/TypeScript, and a
+successful production build.

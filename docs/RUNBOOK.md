@@ -37,7 +37,9 @@
   If POST succeeded but history refresh failed, retry reconciles history first; otherwise
   replay of the same ID is server-idempotent.
 - Bounded collection responses expose `X-Has-More` and an opaque `X-Next-Cursor`.
-  Continue with that cursor and never construct or edit it client-side.
+  Chat's `mode=latest` response also returns `items`, `has_more`, `older_cursor`, `limit`,
+  and `returned_count`; continue older history with the returned cursor. Never construct or
+  edit cursors client-side.
 - The PostgreSQL migration suite destroys and recreates the configured test database's
   `public` schema; only point `POSTGRES_TEST_URL` at a disposable database.
 - Before deleting data, explain that visible content is scrubbed/tombstoned while metadata-only audit rows and backups may remain under operator retention.

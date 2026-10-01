@@ -5,6 +5,7 @@ import Threads,{type ThreadItem} from "../app/threads";
 import History,{type TimelineItem} from "../app/history";
 
 const emptyToday={local_date:"2026-10-01",briefing:null,vocabulary:null,power_list:[],open_commitments:[],active_threads:[],resurfaced_items:[],evening_reflection:{status:"not_started",journal:null}};
+const emptyChatPage={items:[],has_more:false,older_cursor:null,limit:100,returned_count:0};
 const prefs={timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1};
 function json(value:unknown,status=200){return new Response(JSON.stringify(value),{status,headers:{"content-type":"application/json"}})}
 
@@ -25,7 +26,7 @@ describe("Milestone 5 shell",()=>{
     const fetchMock=vi.spyOn(globalThis,"fetch")
       .mockResolvedValueOnce(new Response(null,{status:401}))
       .mockResolvedValueOnce(json({username:"owner"}))
-      .mockResolvedValueOnce(json([]))
+      .mockResolvedValueOnce(json(emptyChatPage))
       .mockResolvedValueOnce(json(emptyToday))
       .mockResolvedValueOnce(json({items:[],has_more:false}))
       .mockResolvedValueOnce(json(prefs))
@@ -45,7 +46,7 @@ describe("Milestone 5 shell",()=>{
 
   it("shows a retryable load error and session-expiry message",async()=>{
     vi.spyOn(globalThis,"fetch")
-      .mockResolvedValueOnce(json([]))
+      .mockResolvedValueOnce(json(emptyChatPage))
       .mockResolvedValueOnce(new Response(null,{status:503}))
       .mockResolvedValueOnce(json(emptyToday))
       .mockResolvedValueOnce(json({items:[],has_more:false}));

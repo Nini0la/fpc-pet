@@ -67,6 +67,59 @@ def seed_owned(session_factory, model, **values):
         return owner.id, stranger.id, item.id
 
 
+def test_chat_latest_and_older_pages_on_postgres(postgres_url, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("DATABASE_URL", postgres_url)
+    monkeypatch.setenv("ACCESS_CODE", "correct horse battery staple")
+    monkeypatch.setenv("SESSION_SECRET", "s" * 32)
+    monkeypatch.setenv("ALLOWED_ORIGINS", "http://testserver")
+    import app.main
+
+    importlib.reload(app.main)
+    Base.metadata.drop_all(app.main.engine)
+    Base.metadata.create_all(app.main.engine)
+    with TestClient(app.main.app) as client:
+        assert client.post(
+            "/api/auth/login",
+            json={"access_code": "correct horse battery staple", "username": "owner"},
+            headers={"origin": "http://testserver"},
+        ).status_code == 200
+        with app.main.SessionLocal.begin() as db:
+            user = db.scalar(select(User).where(User.username == "owner"))
+            conversation = ConversationSession(user_id=user.id)
+            db.add(conversation)
+            db.flush()
+            db.add_all(
+                [
+                    Message(
+                        user_id=user.id,
+                        conversation_id=conversation.id,
+                        role="user",
+                        actor="user",
+                        content=f"message {index}",
+                        ordinal=index + 1,
+                    )
+                    for index in range(102)
+                ]
+            )
+
+        latest_response = client.get(
+            "/api/chat/messages", params={"mode": "latest", "limit": 100}
+        )
+        latest = latest_response.json()
+        older = client.get(
+            "/api/chat/messages",
+            params={"mode": "latest", "limit": 100, "cursor": latest["older_cursor"]},
+        ).json()
+
+    assert latest_response.headers["x-has-more"] == "true"
+    assert [item["content"] for item in latest["items"]] == [
+        f"message {index}" for index in range(2, 102)
+    ]
+    assert [item["content"] for item in older["items"]] == ["message 0", "message 1"]
+    assert older["has_more"] is False
+
+
 @pytest.mark.parametrize(
     ("model", "values", "changed"),
     [

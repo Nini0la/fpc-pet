@@ -4,6 +4,9 @@ import Chat from "../app/chat";
 import Page from "../app/page";
 
 afterEach(()=>vi.restoreAllMocks());
+const page=(items:unknown[],older_cursor:string|null=null)=>({
+  items,has_more:older_cursor!==null,older_cursor,limit:100,returned_count:items.length,
+});
 
 describe("Chat",()=>{
   it("renders untrusted message as text without creating executable markup",()=>{
@@ -22,7 +25,7 @@ describe("Chat",()=>{
     const fetchMock=vi.spyOn(globalThis,"fetch")
       .mockResolvedValueOnce(new Response("{}",{status:201,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(null,{status:503}))
-      .mockResolvedValueOnce(new Response(JSON.stringify([{id:"server",role:"user",content:"hello"}]),{status:200,headers:{"content-type":"application/json"}}));
+      .mockResolvedValueOnce(new Response(JSON.stringify(page([{id:"server",role:"user",content:"hello"}])),{status:200,headers:{"content-type":"application/json"}}));
     render(<Chat/>);
     fireEvent.change(screen.getByLabelText("Message"),{target:{value:"hello"}});
     fireEvent.click(screen.getByRole("button",{name:"Send"}));
@@ -32,6 +35,48 @@ describe("Chat",()=>{
     await waitFor(()=>expect(fetchMock).toHaveBeenCalledTimes(3));
     expect(fetchMock.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).event_id).toBeTruthy();
+    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages?mode=latest&limit=100");
+  });
+
+  it("keeps the newest accepted exchange visible after more than 100 rows",async()=>{
+    const initial=Array.from({length:100},(_,index)=>({id:String(index+2),role:"user" as const,content:`message ${index+2}`}));
+    const reconciled=[...initial.slice(2),
+      {id:"102",role:"user" as const,content:"new accepted message"},
+      {id:"103",role:"assistant" as const,content:"new assistant reply"},
+    ];
+    vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(new Response("{}",{status:201,headers:{"content-type":"application/json"}}))
+      .mockResolvedValueOnce(new Response(JSON.stringify(page(reconciled,"older")),{status:200,headers:{"content-type":"application/json"}}));
+    const {container}=render(<Chat initialMessages={initial} initialOlderCursor="older" initialHasMore/>);
+    fireEvent.change(screen.getByLabelText("Message"),{target:{value:"new accepted message"}});
+    fireEvent.click(screen.getByRole("button",{name:"Send"}));
+
+    expect(await screen.findByText("new assistant reply")).toBeInTheDocument();
+    expect(screen.getAllByText("new accepted message")).toHaveLength(1);
+    expect(container.querySelectorAll("article.message")).toHaveLength(102);
+    expect([...container.querySelectorAll("article.message p")].at(-1)).toHaveTextContent("new assistant reply");
+  });
+
+  it("prepends earlier messages once and keeps the load control focused",async()=>{
+    const latest=Array.from({length:100},(_,index)=>({id:String(index+2),role:"user" as const,content:`message ${index+2}`}));
+    const fetchMock=vi.spyOn(globalThis,"fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(page([
+        {id:"0",role:"user",content:"message 0"},
+        {id:"1",role:"assistant",content:"message 1"},
+      ],"oldest-page")),{status:200,headers:{"content-type":"application/json"}}),
+    );
+    const {container}=render(<Chat initialMessages={latest} initialOlderCursor="older-page" initialHasMore/>);
+    const load=screen.getByRole("button",{name:"Load earlier messages"});
+    load.focus();
+    fireEvent.click(load);
+
+    expect(await screen.findByText("message 0")).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8000/api/chat/messages?mode=latest&limit=100&cursor=older-page");
+    expect(container.querySelectorAll("article.message")).toHaveLength(102);
+    expect([...container.querySelectorAll("article.message p")].map(node=>node.textContent)).toEqual(
+      Array.from({length:102},(_,index)=>`message ${index}`),
+    );
+    expect(load).toHaveFocus();
   });
 });
 
@@ -44,7 +89,7 @@ describe("Page",()=>{
     const fetchMock=vi.spyOn(globalThis,"fetch")
       .mockResolvedValueOnce(new Response(null,{status:401}))
       .mockResolvedValueOnce(new Response(null,{status:200}))
-      .mockResolvedValueOnce(new Response(JSON.stringify(prior),{
+      .mockResolvedValueOnce(new Response(JSON.stringify(page(prior)),{
         status:200,
         headers:{"content-type":"application/json"},
       }))
@@ -65,7 +110,7 @@ describe("Page",()=>{
     expect(await screen.findByText("Earlier question")).toBeInTheDocument();
     expect(screen.getByText("Earlier answer")).toBeInTheDocument();
     await waitFor(()=>expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5));
-    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages?limit=100");
+    expect(fetchMock.mock.calls[2][0]).toBe("http://localhost:8000/api/chat/messages?mode=latest&limit=100");
     expect(fetchMock.mock.calls[3][0]).toBe("http://localhost:8000/api/today");
     expect(fetchMock.mock.calls[4][0]).toBe("http://localhost:8000/api/vocabulary?limit=20&offset=0");
   });

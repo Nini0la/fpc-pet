@@ -1267,6 +1267,134 @@ def test_primary_collections_are_keyset_bounded_without_duplicates(client):
     assert client.get("/api/threads", params={"cursor": "bad"}).status_code == 422
 
 
+def test_chat_latest_page_returns_newest_rows_in_chronological_order(client):
+    from sqlalchemy import select
+
+    import app.main
+    from app.models import ConversationSession, Message, User
+
+    assert login(client).status_code == 200
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        db.add_all(
+            [
+                Message(
+                    user_id=user.id,
+                    conversation_id=conversation.id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    actor="user" if index % 2 == 0 else "assistant",
+                    content=f"message {index}",
+                    ordinal=index + 1,
+                )
+                for index in range(102)
+            ]
+        )
+
+    response = client.get("/api/chat/messages", params={"mode": "latest", "limit": 100})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [item["content"] for item in payload["items"]] == [
+        f"message {index}" for index in range(2, 102)
+    ]
+    assert payload["has_more"] is True
+    assert payload["older_cursor"]
+    assert response.headers["x-has-more"] == "true"
+    assert response.headers["x-next-cursor"] == payload["older_cursor"]
+
+
+def test_chat_older_cursor_has_no_gaps_when_a_new_message_arrives(client):
+    from sqlalchemy import select
+
+    import app.main
+    from app.models import ConversationSession, Message, User
+
+    assert login(client).status_code == 200
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        conversation = ConversationSession(user_id=user.id)
+        db.add(conversation)
+        db.flush()
+        conversation_id = conversation.id
+        db.add_all(
+            [
+                Message(
+                    user_id=user.id,
+                    conversation_id=conversation_id,
+                    role="user",
+                    actor="user",
+                    content=f"message {index}",
+                    ordinal=index + 1,
+                )
+                for index in range(7)
+            ]
+        )
+
+    first = client.get("/api/chat/messages", params={"mode": "latest", "limit": 3}).json()
+    assert [item["content"] for item in first["items"]] == [
+        "message 4",
+        "message 5",
+        "message 6",
+    ]
+    with app.main.SessionLocal.begin() as db:
+        user = db.scalar(select(User).where(User.username == "owner"))
+        db.add(
+            Message(
+                user_id=user.id,
+                conversation_id=conversation_id,
+                role="assistant",
+                actor="assistant",
+                content="message 7",
+                ordinal=8,
+            )
+        )
+
+    collected = list(first["items"])
+    cursor = first["older_cursor"]
+    while cursor:
+        response = client.get(
+            "/api/chat/messages",
+            params={"mode": "latest", "limit": 3, "cursor": cursor},
+        )
+        payload = response.json()
+        collected = payload["items"] + collected
+        cursor = payload["older_cursor"]
+
+    assert [item["content"] for item in collected] == [f"message {index}" for index in range(7)]
+    assert len({item["id"] for item in collected}) == 7
+    refreshed = client.get(
+        "/api/chat/messages", params={"mode": "latest", "limit": 3}
+    ).json()
+    assert [item["content"] for item in refreshed["items"]] == [
+        "message 5",
+        "message 6",
+        "message 7",
+    ]
+
+
+def test_chat_latest_page_is_tenant_scoped(client):
+    assert login(client, username="alice").status_code == 200
+    client.post(
+        "/api/chat/messages",
+        json={"content": "Alice only", "event_id": "alice-message"},
+        headers=csrf(client),
+    )
+    assert login(client, username="bob").status_code == 200
+    client.post(
+        "/api/chat/messages",
+        json={"content": "Bob only", "event_id": "bob-message"},
+        headers=csrf(client),
+    )
+
+    payload = client.get("/api/chat/messages", params={"mode": "latest"}).json()
+
+    assert all("Alice" not in item["content"] for item in payload["items"])
+    assert any("Bob" in item["content"] for item in payload["items"])
+
+
 def test_journal_memory_control_is_cas_tenant_scoped_and_content_free(client):
     from sqlalchemy import select
 

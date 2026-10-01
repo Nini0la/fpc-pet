@@ -7,7 +7,7 @@ import json
 import os
 import secrets
 from datetime import date, datetime, timedelta
-from typing import Annotated, Any, NoReturn, Sequence
+from typing import Annotated, Any, Literal, NoReturn, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -121,6 +121,11 @@ def decode_chat_cursor(cursor: str | None) -> tuple[int, str] | None:
         return int(value[0]), str(value[1])
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         raise HTTPException(422, "Invalid cursor") from error
+
+
+def encode_chat_cursor(ordinal: int, id: str) -> str:
+    raw = json.dumps([ordinal, id], separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
 def digest(value: str) -> str:
@@ -332,19 +337,32 @@ def messages(
     response: Response,
     limit: int = Query(default=PAGE_LIMIT, ge=1, le=100),
     cursor: str | None = Query(default=None, max_length=500),
+    mode: Literal["forward", "latest"] = Query(default="forward"),
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
-    after = decode_chat_cursor(cursor)
+    boundary = decode_chat_cursor(cursor)
     statement = select(Message).where(Message.user_id == user.id)
-    if after:
+    if boundary and mode == "forward":
         statement = statement.where(
             or_(
-                Message.ordinal > after[0],
-                and_(Message.ordinal == after[0], Message.id > after[1]),
+                Message.ordinal > boundary[0],
+                and_(Message.ordinal == boundary[0], Message.id > boundary[1]),
             )
         )
-    rows = db.scalars(statement.order_by(Message.ordinal, Message.id).limit(limit + 1)).all()
+    if boundary and mode == "latest":
+        statement = statement.where(
+            or_(
+                Message.ordinal < boundary[0],
+                and_(Message.ordinal == boundary[0], Message.id < boundary[1]),
+            )
+        )
+    if mode == "latest":
+        rows = db.scalars(
+            statement.order_by(Message.ordinal.desc(), Message.id.desc()).limit(limit + 1)
+        ).all()
+    else:
+        rows = db.scalars(statement.order_by(Message.ordinal, Message.id).limit(limit + 1)).all()
     proactive_ids = {
         message_id
         for message_id in (
@@ -361,11 +379,17 @@ def messages(
         if message_id is not None
     }
     page = rows[:limit]
-    response.headers["X-Has-More"] = str(len(rows) > limit).lower()
-    if len(rows) > limit and page:
-        raw = json.dumps([page[-1].ordinal, page[-1].id], separators=(",", ":")).encode()
-        response.headers["X-Next-Cursor"] = base64.urlsafe_b64encode(raw).decode().rstrip("=")
-    return [
+    if mode == "latest":
+        page = list(reversed(page))
+    has_more = len(rows) > limit
+    response.headers["X-Has-More"] = str(has_more).lower()
+    next_item = page[0] if mode == "latest" and page else page[-1] if page else None
+    next_cursor = (
+        encode_chat_cursor(next_item.ordinal, next_item.id) if has_more and next_item else None
+    )
+    if next_cursor:
+        response.headers["X-Next-Cursor"] = next_cursor
+    items = [
         {
             "id": item.id,
             "role": item.role,
@@ -375,6 +399,15 @@ def messages(
         }
         for item in page
     ]
+    if mode == "latest":
+        return {
+            "items": items,
+            "has_more": has_more,
+            "older_cursor": next_cursor,
+            "limit": limit,
+            "returned_count": len(items),
+        }
+    return items
 
 
 def item_dict(x: Any) -> dict[str, Any]:
