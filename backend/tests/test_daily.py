@@ -261,6 +261,9 @@ def test_evening_checkin_and_free_form_answer_close_the_loop_verbatim():
         assert complete_id in journal.structured_state["completed_ids"]
         assert unfinished_id in journal.structured_state["unfinished_ids"]
         assert db.get(Commitment, complete_id).state == "complete"
+        assert db.get(Commitment, complete_id).completed_at.replace(
+            tzinfo=timezone.utc
+        ) == clock.now()
         assert db.get(Commitment, unfinished_id).state == "open"
         assert db.get(Thread, priority_id).priority == 3
         assert any(item.title == "email Sam" for item in db.scalars(select(Commitment)))

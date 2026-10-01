@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -23,8 +23,10 @@ from .models import (
     ProvenanceLink,
     SkillRun,
     Thread,
+    User,
 )
 from .persistence import MutationResult, append_message, atomic_update
+from .prospective import ProspectiveReminderSkill, parse_commitment_timing
 from .runtime import DeterministicModel, StateExtractor, StateProposal
 
 
@@ -35,6 +37,8 @@ class RuntimeEvent:
     content: str | None = None
     conversation_id: str | None = None
     intended_local_date: date | None = None
+    intended_at: datetime | None = None
+    window_minutes: int | None = None
 
 
 class IdempotencyConflict(Exception):
@@ -57,6 +61,7 @@ class AgentRuntime:
         self.history = SharedHistoryRecallSkill(self.clock)
         self.morning = MorningBriefingSkill()
         self.evening = EveningReflectionSkill()
+        self.prospective = ProspectiveReminderSkill()
 
     @staticmethod
     def _conversation_target(event: RuntimeEvent) -> str | None:
@@ -69,6 +74,8 @@ class AgentRuntime:
             "intended_local_date": (
                 event.intended_local_date.isoformat() if event.intended_local_date else None
             ),
+            "intended_at": event.intended_at.isoformat() if event.intended_at else None,
+            "window_minutes": event.window_minutes,
             "kind": event.kind,
             "user_id": user_id,
         }
@@ -85,8 +92,16 @@ class AgentRuntime:
 
     @staticmethod
     def _legacy_fingerprints(user_id: str, event: RuntimeEvent) -> tuple[str, ...]:
+        legacy_request = {
+            "content": event.content,
+            "intended_local_date": (
+                event.intended_local_date.isoformat() if event.intended_local_date else None
+            ),
+            "kind": event.kind,
+            "user_id": user_id,
+        }
         later_digest = hashlib.sha256(
-            AgentRuntime._canonical_request(user_id, event, include_target=False)
+            json.dumps(legacy_request, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         if event.intended_local_date is not None:
             return (later_digest,)
@@ -168,6 +183,8 @@ class AgentRuntime:
             return self._idempotent_result(db, prior, user_id, event, fingerprint)
         logical_idempotent = False
         reflection_handled = False
+        surfaced = 0
+        transition_reply: str | None = None
         if event.kind == "user_message" and event.content and event.conversation_id:
             user_message = append_message(
                 db,
@@ -218,11 +235,22 @@ class AgentRuntime:
             )
             target: Commitment | Thread | None = None
             if proposal.kind == "commitment":
+                user = db.get(User, user_id)
+                if user is None:
+                    raise ValueError("Unknown user")
+                timing = parse_commitment_timing(event.content, self.clock.now(), user.timezone)
                 target = Commitment(
                     user_id=user_id,
                     title=proposal.title or "",
                     deadline_hint=proposal.deadline_hint,
                     effort_minutes=proposal.effort_minutes,
+                    due_at=timing.due_at,
+                    due_granularity=timing.due_granularity,
+                    due_source_text=timing.source_phrase,
+                    estimated_effort_minutes=(
+                        timing.estimated_effort_minutes or proposal.effort_minutes
+                    ),
+                    ambiguity=timing.ambiguity,
                     confidence=proposal.confidence,
                     derivation=proposal.derivation,
                     created_at=self.clock.now(),
@@ -248,6 +276,50 @@ class AgentRuntime:
                         derivation=proposal.derivation,
                     )
                 )
+            elif proposal.kind == "temporal_update" and proposal.title:
+                temporal_matches = list(
+                    db.scalars(
+                        select(Commitment).where(
+                            Commitment.user_id == user_id,
+                            Commitment.deleted.is_(False),
+                            Commitment.state.in_(("open", "in_progress", "waiting")),
+                            Commitment.title.icontains(
+                                proposal.title.casefold(), autoescape=True
+                            ),
+                        )
+                    )
+                )
+                if len(temporal_matches) == 1:
+                    temporal_target = temporal_matches[0]
+                    outcome = atomic_update(
+                        db,
+                        Commitment,
+                        temporal_target.id,
+                        user_id,
+                        temporal_target.version,
+                        {
+                            "estimated_effort_minutes": proposal.effort_minutes,
+                            "effort_minutes": proposal.effort_minutes,
+                        },
+                    )
+                    if outcome is not MutationResult.UPDATED:
+                        raise ConcurrentMutation(outcome.value)
+                    db.add(
+                        ProvenanceLink(
+                            user_id=user_id,
+                            target_id=temporal_target.id,
+                            source_type="message",
+                            source_id=user_message.id,
+                            confidence=proposal.confidence,
+                            derivation="explicit-temporal-update-v1",
+                        )
+                    )
+                    transition_reply = (
+                        f"I updated the estimate for “{temporal_target.title}” to "
+                        f"{proposal.effort_minutes} minutes."
+                    )
+                elif len(temporal_matches) > 1:
+                    transition_reply = "Which commitment should I apply that estimate to?"
             elif proposal.kind == "transition" and proposal.transition:
                 words = {w.lower().strip(".,!?'\"") for w in event.content.split() if len(w) > 3}
                 if proposal.transition == "complete":
@@ -272,19 +344,54 @@ class AgentRuntime:
                 matches = [
                     item for item in candidates if words & {w.lower() for w in item.title.split()}
                 ]
-                if not matches and "that" in event.content.lower() and candidates:
+                if (
+                    proposal.transition == "complete"
+                    and "finished that already" in event.content.lower()
+                ):
+                    surfaced_candidates = [
+                        item
+                        for item in candidates
+                        if isinstance(item, Commitment) and item.last_surfaced_at is not None
+                    ]
+                    surfaced_candidates.sort(
+                        key=lambda item: (item.last_surfaced_at, item.id), reverse=True
+                    )
+                    if surfaced_candidates:
+                        latest_at = surfaced_candidates[0].last_surfaced_at
+                        latest: list[Commitment | Thread] = [
+                            item
+                            for item in surfaced_candidates
+                            if item.last_surfaced_at == latest_at
+                        ]
+                        if len(latest) == 1:
+                            matches = latest
+                        else:
+                            matches = []
+                            transition_reply = (
+                                "Which commitment did you finish? I surfaced more than one "
+                                "at the same time."
+                            )
+                if (
+                    not matches
+                    and transition_reply is None
+                    and "that" in event.content.lower()
+                    and candidates
+                ):
                     matches = [candidates[-1]]
                 if matches:
                     target = matches[-1]
                     state = "active" if proposal.transition == "reactivate" else proposal.transition
                     state = "abandoned" if state == "abandon" else state
+                    changes: dict[str, Any] = {"state": state}
+                    if isinstance(target, Commitment) and state == "complete":
+                        changes["completed_at"] = self.clock.now()
                     outcome = atomic_update(
                         db,
                         type(target),
                         target.id,
                         user_id,
                         target.version,
-                        {"state": state},
+                        changes,
                     )
                     if outcome is not MutationResult.UPDATED:
                         raise ConcurrentMutation(outcome.value)
@@ -298,7 +405,11 @@ class AgentRuntime:
                             derivation="explicit-state-transition-v1",
                         )
                     )
-            if reflection_handled:
+                    if isinstance(target, Commitment) and state == "complete":
+                        transition_reply = f"Got it — I marked “{target.title}” complete."
+            if transition_reply:
+                reply = transition_reply
+            elif reflection_handled:
                 reply = "Thanks — I’ve carried that into tomorrow."
             elif recalling_history:
                 reply = self.history.answer(
@@ -310,6 +421,14 @@ class AgentRuntime:
                 )
             elif proposal.kind == "clarification":
                 reply = "What should I remind you about?"
+            elif (
+                proposal.kind == "commitment"
+                and isinstance(target, Commitment)
+                and target.ambiguity != "none"
+            ):
+                reply = (
+                    "I saved that commitment, but is 10/11 October 11 or November 10?"
+                )
             else:
                 reply = self.model.respond(event.content)
             append_message(
@@ -337,6 +456,8 @@ class AgentRuntime:
                 self.clock.now(),
                 intended_local_date=event.intended_local_date,
             )
+        elif event.kind == "commitment_check":
+            surfaced = self.prospective.run(db, user_id, recorded.id, self.clock.now())
         db.add(
             SkillRun(
                 user_id=user_id,
@@ -346,6 +467,8 @@ class AgentRuntime:
                     if event.kind == "evening_reflection" or reflection_handled
                     else self.morning.name
                     if event.kind == "morning_briefing"
+                    else self.prospective.name
+                    if event.kind == "commitment_check"
                     else "shared-history-recall"
                     if event.kind == "user_message"
                     and event.content
@@ -359,4 +482,8 @@ class AgentRuntime:
             )
         )
         db.commit()
-        return {"idempotent": logical_idempotent, "handled_by": "AgentRuntime.handle"}
+        return {
+            "idempotent": logical_idempotent,
+            "handled_by": "AgentRuntime.handle",
+            **({"surfaced": surfaced} if event.kind == "commitment_check" else {}),
+        }

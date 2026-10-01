@@ -94,12 +94,73 @@ class Commitment(Owned, Base):
     state: Mapped[str] = mapped_column(String(20), default="open")
     deadline_hint: Mapped[str | None] = mapped_column(Text, nullable=True)
     effort_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    due_granularity: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    due_source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimated_effort_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    importance: Mapped[int] = mapped_column(Integer, default=0)
+    next_relevant_moment: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_surfaced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ambiguity: Mapped[str] = mapped_column(String(50), default="none")
+    dependencies: Mapped[list] = mapped_column(JSON, default=list)
+    available_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    related_thread_id: Mapped[str | None] = mapped_column(
+        ForeignKey("threads.id"), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
     derivation: Mapped[str] = mapped_column(String(100))
     version: Mapped[int] = mapped_column(Integer, default=1)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
-    __table_args__ = (CheckConstraint("state in ('open','complete','abandoned','dormant')"),)
+    __table_args__ = (
+        CheckConstraint(
+            "state in ('open','in_progress','waiting','complete','completed','cancelled',"
+            "'abandoned','dormant')"
+        ),
+        CheckConstraint("importance between 0 and 3"),
+        CheckConstraint("estimated_effort_minutes is null or estimated_effort_minutes >= 0"),
+    )
+
+
+class Reminder(Owned, Base):
+    __tablename__ = "reminders"
+    commitment_id: Mapped[str] = mapped_column(
+        ForeignKey("commitments.id", ondelete="CASCADE"), index=True
+    )
+    thread_id: Mapped[str | None] = mapped_column(ForeignKey("threads.id"), nullable=True)
+    policy_version: Mapped[str] = mapped_column(String(30))
+    relevance_window: Mapped[str] = mapped_column(String(80))
+    reason_code: Mapped[str] = mapped_column(String(50))
+    reason_metadata: Mapped[dict] = mapped_column(JSON)
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    surfaced_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("messages.id"), nullable=True
+    )
+    source_event_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_events.id"), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "commitment_id",
+            "relevance_window",
+            "policy_version",
+            name="uq_reminder_commitment_window_policy",
+        ),
+        CheckConstraint("state in ('pending','surfaced','suppressed','failed')"),
+        CheckConstraint("attempt_count between 0 and 3"),
+    )
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("attempt_count", 0)
+        super().__init__(**kwargs)
 
 
 class Episode(Owned, Base):

@@ -65,6 +65,91 @@ def test_chat_persists_chronology_and_derived_provenance(client):
     assert links[0]["confidence"] == 0.95
 
 
+def test_commitment_check_surfaces_and_today_and_reminders_expose_urgency(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    clock = FakeClock(datetime(2026, 9, 28, 9, tzinfo=timezone.utc))
+    app.main.runtime = AgentRuntime(clock=clock)
+    login(client)
+    headers = csrf(client)
+    response = client.post(
+        "/api/chat/messages",
+        json={
+            "content": "I need to submit evaluation before Friday; it takes 3 hours",
+            "event_id": "commitment",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201
+    clock.set(datetime(2026, 10, 1, 9, tzinfo=timezone.utc))
+    scan = client.post(
+        "/api/events/scheduled",
+        json={
+            "event_id": "scan",
+            "kind": "commitment_check",
+            "intended_at": "2026-10-01T08:30:00Z",
+            "window_minutes": 60,
+        },
+        headers=headers,
+    )
+    assert scan.status_code == 202
+    assert scan.json()["surfaced"] == 1
+
+    today = client.get("/api/today").json()
+    urgency = today["open_commitments"][0]["urgency"]
+    assert urgency["bucket"] == "high"
+    assert urgency["factors"]["effort_minutes"] == 180
+    reminders = client.get("/api/reminders", params={"limit": 1}).json()
+    assert len(reminders["items"]) == 1
+    assert reminders["items"][0]["reason_metadata"] == urgency
+    assert reminders["has_more"] is False
+    assert client.get("/api/reminders", params={"limit": 101}).status_code == 422
+
+    client.post("/api/auth/logout", headers=headers)
+    login(client, username="stranger")
+    assert client.get("/api/reminders").json()["items"] == []
+
+
+def test_commitment_check_validates_intended_window_and_kind(client):
+    import app.main
+    from app.agent import AgentRuntime
+    from app.clock import FakeClock
+
+    app.main.runtime = AgentRuntime(
+        clock=FakeClock(datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc))
+    )
+    login(client)
+    headers = csrf(client)
+    base = {"event_id": "scan", "kind": "commitment_check", "window_minutes": 60}
+    assert client.post(
+        "/api/events/scheduled",
+        json=base | {"intended_at": "2026-11-01T05:30:00Z"},
+        headers=headers,
+    ).status_code == 202
+    assert client.post(
+        "/api/events/scheduled",
+        json=base | {"event_id": "old", "intended_at": "2026-11-01T05:29:59Z"},
+        headers=headers,
+    ).status_code == 422
+    assert client.post(
+        "/api/events/scheduled",
+        json=base | {"event_id": "future", "intended_at": "2026-11-01T06:31:00Z"},
+        headers=headers,
+    ).status_code == 422
+    assert client.post(
+        "/api/events/scheduled",
+        json={
+            "event_id": "wrong-kind",
+            "kind": "morning_briefing",
+            "intended_at": "2026-11-01T06:00:00Z",
+            "window_minutes": 60,
+        },
+        headers=headers,
+    ).status_code == 422
+
+
 def test_event_idempotency_and_input_bound(client):
     login(client)
     h = csrf(client)

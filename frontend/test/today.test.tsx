@@ -6,7 +6,10 @@ const data:TodayData={
   local_date:"2026-09-30",
   briefing:{content:"Good morning.",local_date:"2026-09-30"},
   power_list:[{id:"1",title:"Submit demo",reason:"deadline: Friday",kind:"commitment",score:40}],
-  open_commitments:[{id:"1",title:"Submit demo",deadline_hint:"Friday"}],
+  open_commitments:[{
+    id:"1",title:"Submit demo",deadline_hint:"Friday",
+    urgency:{score:87,bucket:"high",factors:{deadline_hours:38,effort_minutes:180,slack_hours:35,importance:2,inactivity_days:7,blocked_dependencies:1,availability_minutes:null}},
+  }],
   resurfaced_items:[{id:"2",title:"Write docs"}],
   evening_reflection:{status:"awaiting",journal:null},
 };
@@ -18,6 +21,8 @@ describe("Today",()=>{
     expect(screen.getByText("Good morning.")).toBeInTheDocument();
     expect(screen.getByText("Submit demo")).toBeInTheDocument();
     expect(screen.getByText("deadline: Friday")).toBeInTheDocument();
+    expect(screen.getByText("high urgency — score 87")).toBeTruthy();
+    expect(screen.getByText("35h slack · 180 min effort")).toBeTruthy();
     expect(screen.getByText("Write docs")).toBeInTheDocument();
     expect(screen.getByText("Evening reflection: awaiting")).toBeInTheDocument();
   });

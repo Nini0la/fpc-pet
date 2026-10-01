@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 
 from app.agent import AgentRuntime, IdempotencyConflict, RuntimeEvent
+from app.clock import FakeClock
 from app.models import (
     AgentEvent,
     Base,
@@ -22,6 +23,7 @@ from app.models import (
     Message,
     ProvenanceLink,
     ReflectionPrompt,
+    Reminder,
     Thread,
     User,
 )
@@ -513,3 +515,91 @@ def test_postgres_credential_like_chat_stays_out_of_episodic_memory(pg_client):
     assert pg_client.get(
         "/api/history/recall", params={"q": "pg-credential-canary"}
     ).json() == []
+
+
+def test_concurrent_commitment_scans_create_one_reminder_and_message(pg_sessions):
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    with pg_sessions.begin() as db:
+        user = User(username="reminder-race", timezone="UTC")
+        db.add(user)
+        db.flush()
+        db.add(
+            Commitment(
+                user_id=user.id,
+                title="finish evaluation",
+                confidence=1,
+                derivation="test",
+                due_at=datetime(2026, 10, 2, 23, 59, tzinfo=timezone.utc),
+                estimated_effort_minutes=180,
+                importance=2,
+                created_at=datetime(2026, 9, 24, 9, tzinfo=timezone.utc),
+            )
+        )
+        user_id = user.id
+    rendezvous = Barrier(2)
+
+    def scan(event_id: str):
+        with pg_sessions() as db:
+            rendezvous.wait(timeout=10)
+            return AgentRuntime(clock=FakeClock(now)).handle(
+                db, user_id, RuntimeEvent(event_id, "commitment_check")
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [
+            future.result()
+            for future in [pool.submit(scan, "scan-a"), pool.submit(scan, "scan-b")]
+        ]
+    assert sorted(result["surfaced"] for result in results) == [0, 1]
+    with pg_sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Reminder)) == 1
+        assert db.scalar(select(func.count()).select_from(Message)) == 1
+
+
+def test_completion_winning_scan_race_suppresses_stale_reminder(pg_sessions):
+    now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
+    with pg_sessions.begin() as db:
+        user = User(username="completion-race", timezone="UTC")
+        db.add(user)
+        db.flush()
+        commitment = Commitment(
+            user_id=user.id,
+            title="finish evaluation",
+            confidence=1,
+            derivation="test",
+            due_at=datetime(2026, 10, 2, 23, 59, tzinfo=timezone.utc),
+            estimated_effort_minutes=180,
+            importance=2,
+            created_at=datetime(2026, 9, 24, 9, tzinfo=timezone.utc),
+        )
+        db.add(commitment)
+        db.flush()
+        user_id, commitment_id = user.id, commitment.id
+
+    completion = pg_sessions()
+    try:
+        locked = completion.scalar(
+            select(Commitment).where(Commitment.id == commitment_id).with_for_update()
+        )
+        rendezvous = Barrier(2)
+
+        def scan():
+            with pg_sessions() as db:
+                rendezvous.wait(timeout=10)
+                return AgentRuntime(clock=FakeClock(now)).handle(
+                    db, user_id, RuntimeEvent("racing-scan", "commitment_check")
+                )
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(scan)
+            rendezvous.wait(timeout=10)
+            locked.state = "complete"
+            locked.completed_at = now
+            completion.commit()
+            result = future.result(timeout=10)
+        assert result["surfaced"] == 0
+    finally:
+        completion.close()
+    with pg_sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Reminder)) == 0
+        assert db.scalar(select(func.count()).select_from(Message)) == 0

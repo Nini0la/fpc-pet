@@ -4,7 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -25,12 +25,14 @@ from .models import (
     Message,
     ProvenanceLink,
     ReflectionPrompt,
+    Reminder,
     Session,
     Thread,
     User,
     utcnow,
 )
 from .persistence import MutationResult, atomic_update, get_or_create_conversation
+from .prospective import urgency_for
 from .security import resolve_login_username
 
 ENV = os.getenv("APP_ENV", "production")
@@ -224,6 +226,17 @@ def item_dict(x: Any) -> dict[str, Any]:
         c.name: getattr(x, c.name)
         for c in x.__table__.columns
         if c.name not in {"user_id", "deleted"}
+    }
+
+
+def commitment_dict(item: Commitment) -> dict[str, Any]:
+    urgency = urgency_for(item, runtime.clock.now())
+    return item_dict(item) | {
+        "urgency": {
+            "score": urgency.score,
+            "bucket": urgency.bucket,
+            "factors": urgency.factors,
+        }
     }
 
 
@@ -580,7 +593,7 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
         "local_date": local_date,
         "briefing": item_dict(briefing) if briefing else None,
         "power_list": briefing.power_list if briefing else [],
-        "open_commitments": [item_dict(item) for item in open_items],
+        "open_commitments": [commitment_dict(item) for item in open_items],
         "active_threads": [item_dict(item) for item in active_threads],
         "collection_meta": {
             "open_commitments": {
@@ -623,10 +636,29 @@ def journal_history(
     return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
 
 
+@app.get("/api/reminders")
+def reminders(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    rows = db.scalars(
+        select(Reminder)
+        .where(Reminder.user_id == user.id)
+        .order_by(Reminder.created_at.desc(), Reminder.id)
+        .offset(offset)
+        .limit(limit + 1)
+    ).all()
+    return {"items": [item_dict(item) for item in rows[:limit]], "has_more": len(rows) > limit}
+
+
 class ScheduledIn(BaseModel):
     event_id: str = Field(min_length=1, max_length=100)
     kind: str = Field(min_length=1, max_length=50)
     intended_local_date: date | None = None
+    intended_at: datetime | None = None
+    window_minutes: int | None = Field(default=None, ge=1, le=1440)
 
 
 @app.post("/api/events/scheduled", status_code=202, dependencies=[Depends(mutation_guard)])
@@ -641,6 +673,21 @@ def scheduled(
         earliest = current_local_date - timedelta(days=SCHEDULE_CATCHUP_DAYS)
         if not earliest <= body.intended_local_date <= current_local_date:
             raise HTTPException(422, "intended_local_date is outside the catch-up window")
+    has_window = body.intended_at is not None or body.window_minutes is not None
+    if has_window and body.kind != "commitment_check":
+        raise HTTPException(422, "intended_at/window_minutes are only valid for commitment_check")
+    if body.kind == "commitment_check":
+        if body.intended_local_date is not None:
+            raise HTTPException(422, "commitment_check uses intended_at, not intended_local_date")
+        if (body.intended_at is None) != (body.window_minutes is None):
+            raise HTTPException(422, "intended_at and window_minutes must be provided together")
+        if body.intended_at is not None:
+            if body.intended_at.tzinfo is None:
+                raise HTTPException(422, "intended_at must include a timezone")
+            now = runtime.clock.now()
+            earliest = now - timedelta(minutes=body.window_minutes or 0)
+            if not earliest <= body.intended_at <= now:
+                raise HTTPException(422, "intended_at is outside the catch-up window")
     try:
         return runtime.handle(
             db,
@@ -649,6 +696,8 @@ def scheduled(
                 body.event_id,
                 body.kind,
                 intended_local_date=body.intended_local_date,
+                intended_at=body.intended_at,
+                window_minutes=body.window_minutes,
             ),
         )
     except (IdempotencyConflict, ConcurrentMutation) as error:

@@ -382,3 +382,34 @@ def test_legacy_0002_http_message_replays_and_upgrades_safely_on_postgres(
             text("SELECT request_fingerprint FROM agent_events WHERE id = 'legacy-agent-event'")
         ).scalar_one() == upgraded_fingerprint
     engine.dispose()
+
+
+def test_prospective_memory_migration_upgrades_and_downgrades_explicitly(tmp_path: Path):
+    database_path = tmp_path / "prospective-memory.db"
+    database_url = f"sqlite:///{database_path}"
+
+    upgraded = run_alembic(database_url, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert "reminders" in table_names(database_path)
+    assert {
+        "due_at",
+        "due_granularity",
+        "due_source_text",
+        "estimated_effort_minutes",
+        "importance",
+        "next_relevant_moment",
+        "last_surfaced_at",
+        "ambiguity",
+        "dependencies",
+        "available_minutes",
+        "related_thread_id",
+        "completed_at",
+    } <= column_names(database_path, "commitments")
+
+    downgraded = run_alembic(database_url, "downgrade", "0003")
+    assert downgraded.returncode == 0, downgraded.stderr
+    assert "reminders" not in table_names(database_path)
+    assert "due_at" not in column_names(database_path, "commitments")
+    migration = Path("alembic/versions/0004_prospective_memory.py").read_text()
+    assert "op.create_table" in migration
+    assert "op.drop_table" in migration

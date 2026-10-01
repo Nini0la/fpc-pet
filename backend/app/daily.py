@@ -532,6 +532,7 @@ class EveningReflectionSkill:
                 )
                 if item is not None:
                     item.state = "complete"
+                    item.completed_at = now
                     item.version += 1
                     state["completed_ids"].append(item.id)
                     supported.append(f"completed: {item.title}")
