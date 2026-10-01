@@ -78,6 +78,37 @@ describe("Chat",()=>{
     );
     expect(load).toHaveFocus();
   });
+
+  it("moves focus to the oldest loaded message when the final page removes the load control",async()=>{
+    const latest=Array.from({length:100},(_,index)=>({id:String(index+2),role:"user" as const,content:`message ${index+2}`}));
+    vi.spyOn(globalThis,"fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(page([
+        {id:"0",role:"user",content:"message 0"},
+        {id:"1",role:"assistant",content:"message 1"},
+      ])),{status:200,headers:{"content-type":"application/json"}}),
+    );
+    const {container}=render(<Chat initialMessages={latest} initialOlderCursor="final-page" initialHasMore/>);
+    const viewport=container.querySelector<HTMLElement>(".messages");
+    if(!viewport)throw new Error("Expected chat message viewport");
+    let heightRead=0;
+    Object.defineProperty(viewport,"scrollHeight",{configurable:true,get:()=>heightRead++===0?500:700});
+    viewport.scrollTop=37;
+    const load=screen.getByRole("button",{name:"Load earlier messages"});
+    expect(load).toBeInstanceOf(HTMLButtonElement);
+    expect(load).toHaveAttribute("type","button");
+    load.focus();
+    load.click();
+
+    const oldestMessage=(await screen.findByText("message 0")).closest("article");
+    expect(screen.queryByRole("button",{name:"Load earlier messages"})).not.toBeInTheDocument();
+    expect(oldestMessage).toHaveAttribute("tabindex","-1");
+    await waitFor(()=>expect(oldestMessage).toHaveFocus());
+    expect(viewport.scrollTop).toBe(237);
+    expect(screen.getByRole("status")).toHaveTextContent("Earlier messages loaded. Start of conversation reached.");
+    expect([...container.querySelectorAll("article.message p")].map(node=>node.textContent)).toEqual(
+      Array.from({length:102},(_,index)=>`message ${index}`),
+    );
+  });
 });
 
 describe("Page",()=>{
