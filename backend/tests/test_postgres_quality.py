@@ -516,6 +516,114 @@ def test_postgres_credential_like_chat_stays_out_of_episodic_memory(pg_client):
     ).json() == []
 
 
+def test_evening_commitment_mutations_refresh_touch_and_subsequent_inactivity(pg_sessions):
+    original_touch = datetime(2026, 9, 1, 9, tzinfo=timezone.utc)
+    mutation_at = datetime(2026, 9, 30, 20, tzinfo=timezone.utc)
+    scan_at = datetime(2026, 9, 30, 21, tzinfo=timezone.utc)
+    with pg_sessions.begin() as db:
+        user = User(username="evening-touch", timezone="UTC")
+        db.add(user)
+        db.flush()
+        conversation = ConversationSession(user_id=user.id)
+        completed = Commitment(
+            user_id=user.id,
+            title="done task",
+            confidence=1,
+            derivation="test",
+            created_at=original_touch,
+        )
+        unfinished = Commitment(
+            user_id=user.id,
+            title="unfinished task",
+            confidence=1,
+            derivation="test",
+            created_at=original_touch,
+        )
+        priority = Commitment(
+            user_id=user.id,
+            title="priority task",
+            confidence=1,
+            derivation="test",
+            due_at=datetime(2026, 10, 1, 23, 59, tzinfo=timezone.utc),
+            estimated_effort_minutes=180,
+            importance=2,
+            created_at=original_touch,
+        )
+        untouched = Commitment(
+            user_id=user.id,
+            title="untouched task",
+            confidence=1,
+            derivation="test",
+            created_at=original_touch,
+        )
+        db.add_all([conversation, completed, unfinished, priority, untouched])
+        db.flush()
+        user_id, conversation_id = user.id, conversation.id
+        ids = {
+            "completed": completed.id,
+            "unfinished": unfinished.id,
+            "priority": priority.id,
+            "untouched": untouched.id,
+        }
+
+    clock = FakeClock(mutation_at)
+    with pg_sessions() as db:
+        AgentRuntime(clock=clock).handle(
+            db, user_id, RuntimeEvent("evening-touch-prompt", "evening_reflection")
+        )
+    with pg_sessions() as db:
+        AgentRuntime(clock=clock).handle(
+            db,
+            user_id,
+            RuntimeEvent(
+                "evening-touch-answer",
+                "user_message",
+                "I finished done task. I didn't finish unfinished task. "
+                "Priority task is now top priority. Untouched task took focus.",
+                conversation_id,
+            ),
+        )
+
+    with pg_sessions() as db:
+        completed = db.get(Commitment, ids["completed"])
+        unfinished = db.get(Commitment, ids["unfinished"])
+        priority = db.get(Commitment, ids["priority"])
+        untouched = db.get(Commitment, ids["untouched"])
+        assert (completed.state, completed.version, completed.last_touched_at) == (
+            "complete",
+            2,
+            mutation_at,
+        )
+        assert (unfinished.state, unfinished.version, unfinished.last_touched_at) == (
+            "open",
+            2,
+            mutation_at,
+        )
+        assert (priority.priority, priority.version, priority.last_touched_at) == (
+            3,
+            2,
+            mutation_at,
+        )
+        assert (untouched.version, untouched.last_touched_at) == (1, original_touch)
+
+    with pg_sessions() as db:
+        result = AgentRuntime(clock=FakeClock(scan_at)).handle(
+            db, user_id, RuntimeEvent("post-evening-scan", "commitment_check")
+        )
+    assert result["surfaced"] == 1
+    with pg_sessions() as db:
+        reminder = db.scalar(select(Reminder))
+        priority = db.get(Commitment, ids["priority"])
+        assert reminder.commitment_id == priority.id
+        assert reminder.reason_metadata["factors"]["inactivity_days"] == 0
+        assert db.get(Message, reminder.surfaced_message_id).content == (
+            "I’m bringing up “priority task” because the deadline is in 26 hours, "
+            "estimated effort is 180 minutes, schedule slack is 23 hours, "
+            "and importance is 2/3."
+        )
+        assert priority.last_touched_at == mutation_at
+
+
 def test_concurrent_commitment_scans_create_one_reminder_and_message(pg_sessions):
     now = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
     with pg_sessions.begin() as db:

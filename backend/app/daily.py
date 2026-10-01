@@ -517,6 +517,8 @@ class EveningReflectionSkill:
             if unfinished:
                 item = self._matching_item(commitments, unfinished.group(1))
                 if item is not None:
+                    item.last_touched_at = now
+                    item.version += 1
                     state["unfinished_ids"].append(item.id)
                     supported.append(f"unfinished: {item.title}")
                 prior_subject = mentioned[0] if len(mentioned) == 1 else None
@@ -533,6 +535,7 @@ class EveningReflectionSkill:
                 if item is not None:
                     item.state = "complete"
                     item.completed_at = now
+                    item.last_touched_at = now
                     item.version += 1
                     state["completed_ids"].append(item.id)
                     supported.append(f"completed: {item.title}")
@@ -543,6 +546,8 @@ class EveningReflectionSkill:
                 item = self._matching_item([*commitments, *threads], priority_match.group(1))
                 if item is not None:
                     item.priority = 3
+                    if isinstance(item, Commitment):
+                        item.last_touched_at = now
                     item.version += 1
                     state["priority_ids"].append(item.id)
                     supported.append(f"priority: {item.title}")

@@ -22,7 +22,7 @@ Tests were written and observed failing before their corresponding behavior. Doc
 - Commitment temporal/effort/importance/relevance/surfacing/ambiguity/dependency/availability/thread/completion fields without filling unknown values.
 - Tenant-owned Reminder with reason code, factor-only metadata, lifecycle/retry state, commitment/thread/message/event links, and one-per-window/policy uniqueness.
 - Bounded explicit weekday, `next weekday`, ISO date/time, numeric-date ambiguity, and word/digit effort parsing using injected time and IANA timezone. Date-only deadlines preserve granularity/source and use local 23:59:59 for urgency; recognized invalid ISO dates/clocks preserve the original source, never guess `due_at`, and request clarification.
-- Interpretable `m3-v1` urgency/slack service. `last_touched_at` is initialized/backfilled deterministically, refreshed by meaningful commitment mutations, and left unchanged by read-only scans; advancing Monday to Thursday increases urgency solely as deadline slack shrinks.
+- Interpretable `m3-v1` urgency/slack service. `last_touched_at` is initialized/backfilled deterministically, refreshed by meaningful commitment mutations (including evening completion, explicit unfinished touches, and priority changes), and left unchanged by no-op extraction and read-only scans; advancing Monday to Thursday increases urgency solely as deadline slack shrinks.
 - `ProspectiveReminderSkill` and periodic `commitment_check` through `AgentRuntime.handle`; authoritative row refresh immediately precedes surfacing.
 - Atomic proactive message, Reminder, Episode, SkillRun, AgentEvent, provenance, and exact true-factor explanation in the persistent chat.
 - PostgreSQL row locking, uniqueness, event fingerprints, bounded scan/retry, duplicate-scan safety, and completion-wins-race suppression.
@@ -32,9 +32,9 @@ Tests were written and observed failing before their corresponding behavior. Doc
 
 ## Verification
 
-- Updated M3 focused SQLite suite: `23 passed`; invalid-date API and API-touch focused coverage also pass.
-- Real PostgreSQL migration/concurrency focus: `31 passed`, including real-data `0004` upgrade/downgrade/re-upgrade, deterministic `last_touched_at` backfill, duplicate scans, and completion-vs-scan suppression.
-- Full PostgreSQL-enabled backend run: `132 passed`, zero skips. The final newly added exact touched-reminder regression also passed in the updated `23`-test M3 file.
+- Updated daily/M3 focused SQLite suite: `34 passed`.
+- Real PostgreSQL quality focus: `21 passed`, including an exact evening regression proving completion, unfinished, and priority touches at the injected event time, no touch for unsupported extraction/read-only scans, and a subsequent exact zero-inactivity reminder explanation.
+- Full PostgreSQL-enabled backend run: `134 passed`, zero skips, including real-data `0004` upgrade/downgrade/re-upgrade, deterministic `last_touched_at` backfill, duplicate scans, and completion-vs-scan suppression.
 - Ruff and mypy pass. Frontend `6 passed`; npm audit reports `0 vulnerabilities`; ESLint, TypeScript, and the production build pass.
 
 ## Known limits
