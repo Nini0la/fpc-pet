@@ -26,7 +26,11 @@
 - Full gate: `make check`.
 - Backend with live PostgreSQL: set `POSTGRES_TEST_URL`, then `cd backend && uv run pytest -q`. Zero skips are expected when PostgreSQL is reachable.
 - Migration smoke test: `cd backend && uv run alembic upgrade head`, then the migration test suite.
-- Frontend: `cd frontend && npm test && npm audit --audit-level=high && npm run lint && npm run typecheck && npm run build`.
+- Frontend: `cd frontend && npm test && npm run audit:ci && npm run lint && npm run typecheck && npm run build`.
+- `npm run audit:ci` checks production and development dependencies. It fails on every
+  advisory except the exact currently unpatched, development-only `braces@3.0.3`
+  advisory chain documented in `docs/SECURITY_PRIVACY.md`; do not force npm's suggested
+  Next.js ESLint downgrade.
 
 ## Operations and recovery
 

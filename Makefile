@@ -7,5 +7,5 @@ backend-check:
 frontend-install:
 	cd frontend && npm ci
 frontend-check:
-	cd frontend && npm test && npm audit --audit-level=high && npm run lint && npm run typecheck && npm run build
+	cd frontend && npm test && npm run audit:ci && npm run lint && npm run typecheck && npm run build
 check: backend-test backend-check frontend-check

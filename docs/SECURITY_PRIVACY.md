@@ -23,3 +23,10 @@ Known M5 limits: one shared environment access code, no rate limiter, no field e
 no key-rotation UI, literal SQL substring search, conservative rather than comprehensive
 DLP, and no production model provider. Put production behind TLS and a trusted reverse
 proxy.
+
+Accepted development-tooling risk: `eslint-config-next@16.4.0` currently reaches
+`braces@3.0.3` through `fast-glob` and `micromatch`; npm reports the unpatched
+GHSA-vfj7-8cjw-p6xm stack-exhaustion advisory. The affected chain is not a production
+dependency and receives only repository-controlled lint globs, so forced downgrade is
+not justified. The production dependency audit is clean; monitor for a patched upstream
+release.

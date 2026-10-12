@@ -1064,9 +1064,8 @@ def history_timeline(
     if q:
         episode_query = episode_query.where(Episode.summary.icontains(q, autoescape=True))
         journal_query = journal_query.where(
-            or_(
-                JournalEntry.original_content.icontains(q, autoescape=True),
-                JournalEntry.corrected_content.icontains(q, autoescape=True),
+            func.coalesce(JournalEntry.corrected_content, JournalEntry.original_content).icontains(
+                q, autoescape=True
             )
         )
         thread_query = thread_query.where(Thread.title.icontains(q, autoescape=True))
@@ -1166,7 +1165,11 @@ def journal_history(
         JournalEntry.user_id == user.id, JournalEntry.deleted.is_(False)
     )
     if q:
-        statement = statement.where(JournalEntry.original_content.icontains(q, autoescape=True))
+        statement = statement.where(
+            func.coalesce(JournalEntry.corrected_content, JournalEntry.original_content).icontains(
+                q, autoescape=True
+            )
+        )
     rows = db.scalars(
         statement.order_by(JournalEntry.local_date.desc(), JournalEntry.id)
         .offset(offset)

@@ -45,5 +45,21 @@ See `docs/RUNBOOK.md` for commands. Final verification on the disposable Postgre
 service at port 55432 completed with **196 passed, zero skipped**; this includes the
 populated 0007 down/up cycle plus migration, race, API, latest/older chat pagination,
 and tenant-isolation coverage. Ruff and mypy passed. Frontend verification completed
-with **17 passed**, zero high-severity audit findings, clean ESLint/TypeScript, and a
-successful production build.
+with **22 passed**, clean ESLint/TypeScript, a successful Next.js 16.4.0 production
+build, and zero production dependency vulnerabilities.
+
+## Handoff notes
+
+The final M5 review blockers are resolved: journal search now uses only effective
+(corrected-or-original) content; Threads and History load independently without false
+empty states and retry only their own endpoint; provenance 401s expire the session,
+while transient failures show an explicit retry. Browser screenshot dogfooding remains
+unclaimed because the prior environment could not grant Chrome remote-debugging access.
+
+The full development-dependency audit still reports five high findings through
+`eslint-config-next -> fast-glob -> micromatch -> braces@3.0.3`. As of this verification,
+3.0.3 is the newest `braces` release and no patched release exists. This is an accepted,
+bounded tooling risk: the chain is development-only, receives repository-controlled lint
+globs rather than user input, and is absent from the production dependency audit. Do not
+apply npm's suggested forced downgrade to `eslint-config-next@14`; monitor for a patched
+upstream release instead.

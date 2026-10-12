@@ -7,7 +7,9 @@ import History,{type TimelineItem} from "../app/history";
 const emptyToday={local_date:"2026-10-01",briefing:null,vocabulary:null,power_list:[],open_commitments:[],active_threads:[],resurfaced_items:[],evening_reflection:{status:"not_started",journal:null}};
 const emptyChatPage={items:[],has_more:false,older_cursor:null,limit:100,returned_count:0};
 const prefs={timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1};
+const recoveredThread:ThreadItem={id:"recovered",title:"Recovered thread",description:"Loaded after retry",state:"active",importance:1,deadline:null,next_action:"Continue",watch:false,version:1,created_at:"2026-10-01T08:00:00Z",derivation:"explicit"};
 function json(value:unknown,status=200){return new Response(JSON.stringify(value),{status,headers:{"content-type":"application/json"}})}
+function deferred<T>(){let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>{resolve=done});return {promise,resolve}}
 
 afterEach(()=>vi.restoreAllMocks());
 
@@ -54,6 +56,57 @@ describe("Milestone 5 shell",()=>{
     expect(await screen.findByRole("alert")).toHaveTextContent(/could not load/i);
     expect(screen.getByRole("button",{name:"Try again"})).toBeInTheDocument();
   });
+
+  it("keeps Threads and History in per-view loading states until their requests settle",async()=>{
+    const threadsRequest=deferred<Response>();
+    const historyRequest=deferred<Response>();
+    vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(json(emptyChatPage))
+      .mockResolvedValueOnce(json(emptyToday))
+      .mockResolvedValueOnce(json({items:[],has_more:false}))
+      .mockResolvedValueOnce(json(prefs))
+      .mockImplementationOnce(()=>threadsRequest.promise)
+      .mockImplementationOnce(()=>historyRequest.promise);
+    render(<Page/>);
+    const nav=await screen.findByRole("navigation",{name:"Primary"});
+    fireEvent.click(within(nav).getByRole("button",{name:"Threads"}));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading threads");
+    expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
+    threadsRequest.resolve(json([]));
+    expect(await screen.findByText("Nothing here yet")).toBeInTheDocument();
+    fireEvent.click(within(nav).getByRole("button",{name:"History"}));
+    expect(screen.getByRole("status")).toHaveTextContent("Loading history");
+    expect(screen.queryByText("No memories found")).not.toBeInTheDocument();
+    historyRequest.resolve(json({items:[],has_more:false}));
+    expect(await screen.findByText("No memories found")).toBeInTheDocument();
+  });
+
+  it("keeps failed empty views distinct and retries only their own endpoint",async()=>{
+    const fetchMock=vi.spyOn(globalThis,"fetch")
+      .mockResolvedValueOnce(json(emptyChatPage))
+      .mockResolvedValueOnce(json(emptyToday))
+      .mockResolvedValueOnce(json({items:[],has_more:false}))
+      .mockResolvedValueOnce(json(prefs))
+      .mockResolvedValueOnce(new Response(null,{status:503}))
+      .mockResolvedValueOnce(new Response(null,{status:503}))
+      .mockResolvedValueOnce(json([recoveredThread]))
+      .mockResolvedValueOnce(json({items:[],has_more:false}));
+    render(<Page/>);
+    const nav=await screen.findByRole("navigation",{name:"Primary"});
+    fireEvent.click(within(nav).getByRole("button",{name:"Threads"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Threads could not be loaded");
+    expect(screen.queryByText("Nothing here yet")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Try again"}));
+    expect(await screen.findByText("Recovered thread")).toBeInTheDocument();
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain("/api/threads?limit=100");
+
+    fireEvent.click(within(nav).getByRole("button",{name:"History"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("History could not be loaded");
+    expect(screen.queryByText("No memories found")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button",{name:"Try again"}));
+    expect(await screen.findByText("No memories found")).toBeInTheDocument();
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain("/api/history/timeline");
+  });
 });
 
 describe("Threads correction",()=>{
@@ -95,5 +148,22 @@ describe("History correction",()=>{
     expect(screen.getByRole("dialog",{name:"Delete memory?"})).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button",{name:"Delete permanently"}));
     await waitFor(()=>expect(onReload).toHaveBeenCalled());
+  });
+
+  it("expires the session when provenance inspection returns 401",async()=>{
+    const onExpired=vi.fn();
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(null,{status:401}));
+    render(<History items={[item]} onReload={()=>undefined} onSessionExpired={onExpired}/>);
+    fireEvent.click(screen.getByRole("button",{name:"View source"}));
+    await waitFor(()=>expect(onExpired).toHaveBeenCalledOnce());
+    expect(screen.queryByText("No additional provenance is available.")).not.toBeInTheDocument();
+  });
+
+  it("shows a retryable provenance error instead of claiming provenance is absent",async()=>{
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(new Response(null,{status:503}));
+    render(<History items={[item]} onReload={()=>undefined} onSessionExpired={()=>undefined}/>);
+    fireEvent.click(screen.getByRole("button",{name:"View source"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Could not load provenance");
+    expect(screen.getByRole("button",{name:"Retry source lookup"})).toBeInTheDocument();
   });
 });

@@ -1421,6 +1421,18 @@ def test_journal_memory_control_is_cas_tenant_scoped_and_content_free(client):
     )
     assert corrected.status_code == 200
     assert corrected.json()["corrected_content"] == "Corrected reflection"
+    assert client.get("/api/history/journals", params={"q": "Verbatim"}).json()["items"] == []
+    journal_search = client.get(
+        "/api/history/journals", params={"q": "Corrected", "limit": 10}
+    ).json()
+    assert [item["id"] for item in journal_search["items"]] == [entry_id]
+    assert client.get("/api/history/timeline", params={"q": "Verbatim"}).json()["items"] == []
+    timeline_search = client.get(
+        "/api/history/timeline", params={"q": "Corrected", "limit": 10}
+    ).json()
+    assert [(item["kind"], item["id"]) for item in timeline_search["items"]] == [
+        ("journal", entry_id)
+    ]
     with app.main.SessionLocal() as db:
         assert db.get(JournalEntry, entry_id).original_content == "Verbatim reflection"
     assert (
