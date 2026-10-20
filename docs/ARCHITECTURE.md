@@ -1,5 +1,15 @@
 # Architecture
 
+## Current Extension
+
+See [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md) for the current reconciliation and limits.
+Threads now also represent projects and ideas; Context Plates project that state. A bounded
+context builder feeds an OpenAI-compatible gateway and allowlisted native tools. Assistance
+runs, explicit feedback and evidence-linked milestones extend the existing event audit.
+The gateway supports generic OpenAI-compatible and Azure deployment-scoped APIs; Azure GPT-5.4
+has passed a synthetic live workflow. See [AZURE_OPENAI.md](AZURE_OPENAI.md). The M5 description below
+documents the preserved continuity foundation; its deferred-provider statement is historical.
+
 ## Milestone 5 boundary
 
 One FastAPI service and one Next.js app use PostgreSQL as production authority. SQLite remains limited to isolated API/unit tests. There is no broker, vector database, graph orchestration engine, or private FPC machinery. Conversation segmentation is internal; chat, morning briefings, and evening check-ins share one continuing relationship.

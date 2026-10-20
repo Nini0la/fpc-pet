@@ -9,7 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import ConversationSession, Message
+from .models import ConversationSession, Message, User, utcnow
 
 
 class MutationResult(Enum):
@@ -110,6 +110,9 @@ def atomic_update(
         )
     )
     if result.rowcount == 1:
+        # Old chat may repeat corrected or deleted memory. Only later messages may
+        # enter subsequent model context; the visible transcript stays unchanged.
+        db.execute(update(User).where(User.id == user_id).values(context_reset_at=utcnow()))
         db.expire_all()
         return MutationResult.UPDATED
     exists = db.scalar(

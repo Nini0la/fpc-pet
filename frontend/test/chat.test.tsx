@@ -2,6 +2,7 @@ import {fireEvent,render,screen,waitFor} from "@testing-library/react";
 import {afterEach,describe,expect,it,vi} from "vitest";
 import Chat from "../app/chat";
 import Page from "../app/page";
+import {mockFetchWithProfile} from "./mock-fetch";
 
 afterEach(()=>vi.restoreAllMocks());
 const page=(items:unknown[],older_cursor:string|null=null)=>({
@@ -9,20 +10,24 @@ const page=(items:unknown[],older_cursor:string|null=null)=>({
 });
 
 describe("Chat",()=>{
-  it("renders untrusted message as text without creating executable markup",()=>{
+  it("renders untrusted message as text without creating executable markup",async()=>{
+    mockFetchWithProfile();
     const payload='<img src=x onerror=alert(1)>';
     render(<Chat initialMessages={[{id:"1",role:"user",content:payload}]}/>);
     expect(screen.getByText(payload)).toBeInTheDocument();
     expect(document.querySelector("img")).toBeNull();
+    expect(await screen.findByText("Pip")).toBeInTheDocument();
   });
 
-  it("shows the bounded message capacity",()=>{
+  it("shows the bounded message capacity",async()=>{
+    mockFetchWithProfile();
     render(<Chat/>);
     expect(screen.getByText("0 / 4000")).toBeInTheDocument();
+    expect(await screen.findByText("Pip")).toBeInTheDocument();
   });
 
   it("reconciles an accepted send without posting it twice",async()=>{
-    const fetchMock=vi.spyOn(globalThis,"fetch")
+    const fetchMock=mockFetchWithProfile()
       .mockResolvedValueOnce(new Response("{}",{status:201,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(null,{status:503}))
       .mockResolvedValueOnce(new Response(JSON.stringify(page([{id:"server",role:"user",content:"hello"}])),{status:200,headers:{"content-type":"application/json"}}));
@@ -44,7 +49,7 @@ describe("Chat",()=>{
       {id:"102",role:"user" as const,content:"new accepted message"},
       {id:"103",role:"assistant" as const,content:"new assistant reply"},
     ];
-    vi.spyOn(globalThis,"fetch")
+    mockFetchWithProfile()
       .mockResolvedValueOnce(new Response("{}",{status:201,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify(page(reconciled,"older")),{status:200,headers:{"content-type":"application/json"}}));
     const {container}=render(<Chat initialMessages={initial} initialOlderCursor="older" initialHasMore/>);
@@ -59,7 +64,7 @@ describe("Chat",()=>{
 
   it("prepends earlier messages once and keeps the load control focused",async()=>{
     const latest=Array.from({length:100},(_,index)=>({id:String(index+2),role:"user" as const,content:`message ${index+2}`}));
-    const fetchMock=vi.spyOn(globalThis,"fetch").mockResolvedValueOnce(
+    const fetchMock=mockFetchWithProfile().mockResolvedValueOnce(
       new Response(JSON.stringify(page([
         {id:"0",role:"user",content:"message 0"},
         {id:"1",role:"assistant",content:"message 1"},
@@ -81,7 +86,7 @@ describe("Chat",()=>{
 
   it("moves focus to the oldest loaded message when the final page removes the load control",async()=>{
     const latest=Array.from({length:100},(_,index)=>({id:String(index+2),role:"user" as const,content:`message ${index+2}`}));
-    vi.spyOn(globalThis,"fetch").mockResolvedValueOnce(
+    mockFetchWithProfile().mockResolvedValueOnce(
       new Response(JSON.stringify(page([
         {id:"0",role:"user",content:"message 0"},
         {id:"1",role:"assistant",content:"message 1"},
@@ -117,7 +122,7 @@ describe("Page",()=>{
       {id:"1",role:"user",content:"Earlier question"},
       {id:"2",role:"assistant",content:"Earlier answer"},
     ];
-    const fetchMock=vi.spyOn(globalThis,"fetch")
+    const fetchMock=mockFetchWithProfile()
       .mockResolvedValueOnce(new Response(null,{status:401}))
       .mockResolvedValueOnce(new Response(null,{status:200}))
       .mockResolvedValueOnce(new Response(JSON.stringify(page(prior)),{
@@ -156,11 +161,11 @@ describe("Page",()=>{
       resurfaced_items:[],
       evening_reflection:{status:"not_started",journal:null},
     };
-    vi.spyOn(globalThis,"fetch")
+    const fetchMock=mockFetchWithProfile()
       .mockResolvedValueOnce(new Response("[]",{status:200,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify(today),{status:200,headers:{"content-type":"application/json"}}))
       .mockResolvedValueOnce(new Response(JSON.stringify({items:[],has_more:false}),{status:200,headers:{"content-type":"application/json"}}));
-    vi.mocked(globalThis.fetch).mockResolvedValueOnce(new Response(JSON.stringify({timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1}),{status:200,headers:{"content-type":"application/json"}}));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({timezone:"UTC",morning_time:"08:00",evening_time:"20:00",onboarding_complete:true,version:1}),{status:200,headers:{"content-type":"application/json"}}));
 
     render(<Page/>);
 

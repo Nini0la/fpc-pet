@@ -8,6 +8,7 @@ import os
 import secrets
 from datetime import date, datetime, timedelta
 from typing import Annotated, Any, Literal, NoReturn, Sequence
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
@@ -19,13 +20,19 @@ from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
 from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, RuntimeEvent
+from .assistance import snapshot_thread
 from .daily import POLICY_VERSION, local_date_for
+from .gateway import GatewayError, OpenAICompatibleGateway
 from .models import (
     AgentEvent,
+    AssistanceFeedback,
+    AssistanceRun,
     Base,
     Commitment,
+    ConversationSession,
     DailyBriefing,
     Episode,
+    GrowthEvent,
     JournalEntry,
     Message,
     ProvenanceLink,
@@ -33,6 +40,7 @@ from .models import (
     Reminder,
     Session,
     Thread,
+    ThreadRevision,
     User,
     VocabularyAttempt,
     VocabularyItem,
@@ -50,8 +58,12 @@ SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 ORIGINS = [x.strip() for x in os.getenv("ALLOWED_ORIGINS", "").split(",") if x.strip()]
 if ENV == "production" and MODEL_MODE == "deterministic":
     raise RuntimeError("Deterministic model disabled in production")
-if MODEL_MODE != "deterministic":
-    raise RuntimeError("No live model adapter is configured")
+if MODEL_MODE not in {"live", "deterministic"}:
+    raise RuntimeError("MODEL_MODE must be live or deterministic")
+try:
+    gateway = OpenAICompatibleGateway.from_env() if MODEL_MODE == "live" else None
+except GatewayError:
+    raise RuntimeError("Live model configuration is missing or invalid") from None
 if ENV == "production" and (
     not DATABASE_URL or not ACCESS_CODE or len(SESSION_SECRET) < 32 or not ORIGINS
 ):
@@ -76,7 +88,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "X-CSRF-Token"],
 )
-runtime = AgentRuntime()
+runtime = AgentRuntime(gateway=gateway)
 TODAY_COLLECTION_LIMIT = 50
 SCHEDULE_CATCHUP_DAYS = 1
 RETRYABLE_SQLSTATES = {"40001", "40P01", "55P03"}
@@ -181,6 +193,13 @@ def mutation_guard(
         or not hmac.compare_digest(auth.csrf_hash, digest(csrf))
     ):
         raise HTTPException(403, "CSRF validation failed")
+    # Serialize API memory corrections/deletions with generation before reading
+    # mutable records. This preserves the runtime's conversation-first lock order.
+    conversation = get_or_create_conversation(db, auth.user_id)
+    db.scalar(select(type(conversation)).where(
+        type(conversation).id == conversation.id,
+        type(conversation).user_id == auth.user_id,
+    ).with_for_update())
 
 
 class LoginIn(BaseModel):
@@ -305,9 +324,60 @@ def logout(
     response.delete_cookie("csrf_token")
 
 
+def companion_dict(user: User) -> dict[str, Any]:
+    return {
+        "name": user.pet_name,
+        "temperament": user.temperament,
+        "version": user.version,
+        "model_mode": MODEL_MODE,
+    }
+
+
+class CompanionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+    temperament: Literal["calm", "curious", "playful"]
+    version: int = Field(ge=1)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def trim_name(cls, value: Any) -> Any:
+        return value.strip() if isinstance(value, str) else value
+
+
+@app.get("/api/companion")
+def companion(user: User = Depends(current_user)):
+    return companion_dict(user)
+
+
+@app.patch("/api/companion", dependencies=[Depends(mutation_guard)])
+def update_companion(
+    body: CompanionIn,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    result = db.execute(
+        update(User)
+        .where(User.id == user.id, User.version == body.version)
+        .values(pet_name=body.name, temperament=body.temperament, version=body.version + 1)
+    )
+    if getattr(result, "rowcount", 0) != 1:
+        db.rollback()
+        raise HTTPException(409, "Version conflict")
+    db.commit()
+    db.refresh(user)
+    return companion_dict(user)
+
+
 class ChatIn(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     event_id: str = Field(min_length=1, max_length=100)
+    allow_memory_write: bool = False
+    active_thread_id: str | None = Field(default=None, max_length=36)
+
+    @field_validator("active_thread_id")
+    @classmethod
+    def valid_thread_id(cls, value: str | None) -> str | None:
+        return str(UUID(value)) if value is not None else None
 
 
 @app.post("/api/chat/messages", status_code=201, dependencies=[Depends(mutation_guard)])
@@ -317,10 +387,21 @@ def send_message(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
+    if body.active_thread_id is not None:
+        owned_thread(body.active_thread_id, user, db)
     conversation = get_or_create_conversation(db, user.id)
     try:
         result = runtime.handle(
-            db, user.id, RuntimeEvent(body.event_id, "user_message", body.content, conversation.id)
+            db,
+            user.id,
+            RuntimeEvent(
+                body.event_id,
+                "user_message",
+                body.content,
+                conversation.id,
+                allow_memory_write=body.allow_memory_write,
+                active_thread_id=body.active_thread_id,
+            ),
         )
     except (IdempotencyConflict, ConcurrentMutation) as error:
         db.rollback()
@@ -429,6 +510,168 @@ def commitment_dict(item: Commitment) -> dict[str, Any]:
     }
 
 
+@app.get("/api/context/plates")
+def context_plates(db: DBSession = Depends(db_session), user: User = Depends(current_user)):
+    statement = select(Thread).where(Thread.user_id == user.id, Thread.deleted.is_(False))
+    total = db.scalar(select(func.count()).select_from(statement.subquery())) or 0
+    rows = db.scalars(
+        statement.order_by(Thread.created_at.desc(), Thread.id.desc()).limit(50)
+    ).all()
+    items = []
+    for row in rows:
+        ideas = db.scalars(
+            select(Thread)
+            .where(
+                Thread.user_id == user.id,
+                Thread.parent_thread_id == row.id,
+                Thread.kind == "idea",
+                Thread.deleted.is_(False),
+            )
+            .order_by(Thread.created_at.desc(), Thread.id.desc())
+            .limit(21)
+        ).all()
+        linked_commitments = db.scalars(
+            select(Commitment)
+            .where(
+                Commitment.user_id == user.id,
+                Commitment.related_thread_id == row.id,
+                Commitment.deleted.is_(False),
+            )
+            .order_by(Commitment.created_at.desc(), Commitment.id.desc())
+            .limit(21)
+        ).all()
+        items.append(item_dict(row) | {
+            "ideas": [item_dict(idea) for idea in ideas[:20]],
+            "commitments": [item_dict(item) for item in linked_commitments[:20]],
+            "collection_meta": {
+                "ideas": {"limit": 20, "returned_count": min(len(ideas), 20),
+                          "has_more": len(ideas) > 20},
+                "commitments": {"limit": 20, "returned_count": min(len(linked_commitments), 20),
+                                "has_more": len(linked_commitments) > 20},
+            },
+        })
+    return {
+        "items": items, "limit": 50, "returned_count": len(items),
+        "total_count": total, "has_more": total > len(items),
+    }
+
+
+@app.get("/api/assistance")
+def assistance_history(
+    limit: int = Query(default=10, ge=1, le=50),
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    runs = db.scalars(
+        select(AssistanceRun)
+        .where(AssistanceRun.user_id == user.id)
+        .order_by(AssistanceRun.created_at.desc(), AssistanceRun.id.desc())
+        .limit(limit + 1)
+    ).all()
+    items = []
+    for run in runs[:limit]:
+        feedback = db.scalars(
+            select(AssistanceFeedback)
+            .where(AssistanceFeedback.user_id == user.id, AssistanceFeedback.run_id == run.id)
+            .order_by(AssistanceFeedback.created_at.desc(), AssistanceFeedback.id.desc())
+            .limit(50)
+        ).all()
+        items.append({
+            "id": run.id,
+            "message_id": run.message_id,
+            "intervention_type": run.intervention_type,
+            "execution_status": run.execution_status,
+            "observed_outcome": run.observed_outcome,
+            "context_manifest": run.context_manifest,
+            "policy": run.policy,
+            "usage": run.usage,
+            "tool_results": run.tool_results,
+            "created_at": run.created_at,
+            "feedback": [item_dict(item) for item in feedback],
+        })
+    growth = db.scalars(
+        select(GrowthEvent)
+        .where(GrowthEvent.user_id == user.id)
+        .order_by(GrowthEvent.created_at.desc(), GrowthEvent.id.desc())
+        .limit(20)
+    ).all()
+    return {
+        "items": items, "growth": [item_dict(item) for item in growth],
+        "has_more": len(runs) > limit,
+    }
+
+
+class AssistanceFeedbackIn(BaseModel):
+    event_id: str = Field(min_length=1, max_length=100)
+    verdict: Literal["helpful", "unhelpful", "acknowledged", "completed"]
+
+
+@app.post(
+    "/api/assistance/{id}/feedback", status_code=201, dependencies=[Depends(mutation_guard)]
+)
+def assistance_feedback(
+    id: str,
+    body: AssistanceFeedbackIn,
+    response: Response,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    try:
+        conversation = get_or_create_conversation(db, user.id)
+        # Share the runtime's tenant lock before checking idempotency or recording evidence.
+        db.scalar(
+            select(ConversationSession)
+            .where(
+                ConversationSession.id == conversation.id, ConversationSession.user_id == user.id
+            )
+            .with_for_update()
+        )
+        run = db.scalar(
+            select(AssistanceRun).where(AssistanceRun.id == id, AssistanceRun.user_id == user.id)
+        )
+        if run is None:
+            raise HTTPException(404, "Not found")
+        existing = db.scalar(
+            select(AssistanceFeedback).where(
+                AssistanceFeedback.user_id == user.id,
+                AssistanceFeedback.external_id == body.event_id,
+            )
+        )
+        if existing is not None:
+            if existing.run_id != id or existing.verdict != body.verdict:
+                raise HTTPException(409, "Feedback event already used for a different request")
+            response.status_code = 200
+            return item_dict(existing)
+        feedback = AssistanceFeedback(
+            user_id=user.id, run_id=id, external_id=body.event_id, verdict=body.verdict,
+            created_at=runtime.clock.now(),
+        )
+        db.add(feedback)
+        db.flush()
+        run.observed_outcome = {
+            "helpful": "user_confirmed_helpful",
+            "unhelpful": "user_confirmed_unhelpful",
+            "acknowledged": "acknowledged",
+            "completed": "user_reported_completed",
+        }[body.verdict]
+        if body.verdict in {"helpful", "completed"}:
+            db.add(GrowthEvent(
+                user_id=user.id,
+                dimension="judgement" if body.verdict == "helpful" else "human_empowerment",
+                event_type=(
+                    "helpfulness_reported" if body.verdict == "helpful" else "outcome_reported"
+                ),
+                evidence_id=feedback.id,
+                assessment="milestone",
+                created_at=runtime.clock.now(),
+            ))
+        db.commit()
+        db.refresh(feedback)
+        return item_dict(feedback)
+    except OperationalError as error:
+        raise_retryable_database_conflict(db, error)
+
+
 @app.get("/api/threads")
 def threads(
     response: Response,
@@ -496,6 +739,20 @@ def get_thread(id: str, db: DBSession = Depends(db_session), user: User = Depend
     return item_dict(owned_thread(id, user, db))
 
 
+@app.get("/api/threads/{id}/revisions")
+def thread_revisions(
+    id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user)
+):
+    owned_thread(id, user, db)
+    rows = db.scalars(
+        select(ThreadRevision)
+        .where(ThreadRevision.user_id == user.id, ThreadRevision.thread_id == id)
+        .order_by(ThreadRevision.version.desc(), ThreadRevision.id.desc())
+        .limit(51)
+    ).all()
+    return {"items": [item_dict(item) for item in rows[:50]], "has_more": len(rows) > 50}
+
+
 class Correction(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     version: int = Field(ge=1)
@@ -504,6 +761,9 @@ class Correction(BaseModel):
 class ThreadCorrection(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str | None = Field(default=None, max_length=2000)
+    kind: Literal["thread", "project", "idea"] | None = None
+    why: str | None = Field(default=None, max_length=1000)
+    epistemic_status: Literal["fact", "inference", "hypothesis"] | None = None
     state: str | None = Field(
         default=None, pattern=r"^(active|exploring|waiting|dormant|completed|abandoned)$"
     )
@@ -513,7 +773,7 @@ class ThreadCorrection(BaseModel):
     watch: bool | None = None
     version: int = Field(ge=1)
 
-    @field_validator("title", "description", "next_action", mode="before")
+    @field_validator("title", "description", "next_action", "why", mode="before")
     @classmethod
     def trim_text(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
@@ -526,9 +786,26 @@ def correct_thread(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
+    item = db.scalar(
+        select(Thread)
+        .where(Thread.id == id, Thread.user_id == user.id, Thread.deleted.is_(False))
+        .with_for_update()
+    )
+    if item is None:
+        raise HTTPException(404, "Not found")
+    if item.version != body.version:
+        raise HTTPException(409, "Version conflict")
+    if item.kind == "project" and body.kind is not None and body.kind != "project":
+        if db.scalar(select(Thread.id).where(
+            Thread.user_id == user.id, Thread.parent_thread_id == id,
+        ).limit(1)) is not None:
+            raise HTTPException(409, "A project with linked children cannot change kind")
     values = {"title": body.title}
     values.update(body.model_dump(exclude={"title", "version"}, exclude_none=True))
+    snapshot_thread(db, item, "before_correction")
     require_mutation(atomic_update(db, Thread, id, user.id, body.version, values))
+    db.refresh(item)
+    snapshot_thread(db, item, "user_correction")
     db.add(
         ProvenanceLink(
             user_id=user.id,
@@ -559,9 +836,21 @@ def delete_thread(
             id,
             user.id,
             version if version is not None else item.version,
-            {"deleted": True, "title": "[deleted]"},
+            {
+                "deleted": True, "title": "[deleted]", "description": "",
+                "why": "", "next_action": "",
+            },
         )
     )
+    db.execute(
+        update(ThreadRevision)
+        .where(ThreadRevision.user_id == user.id, ThreadRevision.thread_id == id)
+        .values(snapshot={})
+    )
+    db.add(ProvenanceLink(
+        user_id=user.id, target_id=id, source_type="deletion_tombstone", source_id=None,
+        confidence=1.0, derivation="user-thread-deletion", metadata_only=True,
+    ))
     db.commit()
 
 
@@ -784,6 +1073,7 @@ def correct_journal(
             {"corrected_content": body.content, "updated_at": runtime.clock.now()},
         )
     )
+    invalidate_journal_episodes(db, user.id, id)
     db.add(
         ProvenanceLink(
             user_id=user.id,
@@ -824,6 +1114,7 @@ def delete_journal(
             },
         )
     )
+    invalidate_journal_episodes(db, user.id, id)
     db.add(
         ProvenanceLink(
             user_id=user.id,
@@ -836,6 +1127,16 @@ def delete_journal(
         )
     )
     db.commit()
+
+
+def invalidate_journal_episodes(db: DBSession, user_id: str, journal_id: str) -> None:
+    derived = select(ProvenanceLink.target_id).where(
+        ProvenanceLink.user_id == user_id, ProvenanceLink.source_type == "journal_entry",
+        ProvenanceLink.source_id == journal_id,
+    )
+    db.execute(update(Episode).where(Episode.user_id == user_id, Episode.id.in_(derived)).values(
+        summary="[source corrected or deleted]", deleted=True, version=Episode.version + 1,
+    ))
 
 
 @app.get("/api/history/recall")

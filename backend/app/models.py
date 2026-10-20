@@ -42,12 +42,17 @@ class User(Base):
     __tablename__ = "users"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     username: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    pet_name: Mapped[str] = mapped_column(String(60), default="Mica")
+    temperament: Mapped[str] = mapped_column(String(20), default="calm")
     timezone: Mapped[str] = mapped_column(String(64), default="UTC")
     morning_time: Mapped[str] = mapped_column(String(5), default="08:00")
     evening_time: Mapped[str] = mapped_column(String(5), default="20:00")
     onboarding_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    context_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Session(Base):
@@ -88,6 +93,11 @@ class Thread(Owned, Base):
     __tablename__ = "threads"
     title: Mapped[str] = mapped_column(Text)
     description: Mapped[str] = mapped_column(Text, default="")
+    kind: Mapped[str] = mapped_column(String(20), default="thread")
+    why: Mapped[str] = mapped_column(Text, default="")
+    # A fact is user-stated, not externally verified, including legacy explicit records.
+    epistemic_status: Mapped[str] = mapped_column(String(20), default="fact")
+    parent_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     state: Mapped[str] = mapped_column(String(20), default="active")
     importance: Mapped[int] = mapped_column(Integer, default=0)
     deadline: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -104,6 +114,35 @@ class Thread(Owned, Base):
         ),
         CheckConstraint("importance between 0 and 3"),
         UniqueConstraint("user_id", "id", name="uq_threads_user_id_id"),
+        CheckConstraint("kind in ('thread','project','idea')", name="ck_threads_kind"),
+        CheckConstraint(
+            "epistemic_status in ('fact','inference','hypothesis')",
+            name="ck_threads_epistemic_status",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "parent_thread_id"],
+            ["threads.user_id", "threads.id"],
+            name="fk_threads_user_parent_thread",
+        ),
+    )
+
+
+class ThreadRevision(Owned, Base):
+    __tablename__ = "thread_revisions"
+    thread_id: Mapped[str] = mapped_column(String(36))
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    source_type: Mapped[str] = mapped_column(String(30))
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "thread_id", "version", name="uq_thread_revisions_user_thread_version"
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "thread_id"],
+            ["threads.user_id", "threads.id"],
+            name="fk_thread_revisions_user_thread",
+            ondelete="CASCADE",
+        ),
     )
 
 
@@ -232,6 +271,93 @@ class AgentEvent(Owned, Base):
     __table_args__ = (
         UniqueConstraint("user_id", "external_id"),
         UniqueConstraint("user_id", "id", name="uq_agent_events_user_id_id"),
+    )
+
+
+class AssistanceRun(Owned, Base):
+    __tablename__ = "assistance_runs"
+    event_id: Mapped[str] = mapped_column(String(36))
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    related_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    related_commitment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Store context references and selection metadata, never copies of raw context.
+    context_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    policy: Mapped[dict] = mapped_column(JSON, default=dict)
+    intervention_type: Mapped[str] = mapped_column(String(40))
+    execution_status: Mapped[str] = mapped_column(String(30), default="attempted")
+    observed_outcome: Mapped[str] = mapped_column(String(30), default="unknown")
+    usage: Mapped[list] = mapped_column(JSON, default=list)
+    tool_results: Mapped[list] = mapped_column(JSON, default=list)
+    __table_args__ = (
+        UniqueConstraint("user_id", "event_id", name="uq_assistance_runs_user_event"),
+        UniqueConstraint("user_id", "id", name="uq_assistance_runs_user_id_id"),
+        ForeignKeyConstraint(
+            ["user_id", "event_id"],
+            ["agent_events.user_id", "agent_events.id"],
+            name="fk_assistance_runs_user_event",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "message_id"],
+            ["messages.user_id", "messages.id"],
+            name="fk_assistance_runs_user_message",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "related_thread_id"],
+            ["threads.user_id", "threads.id"],
+            name="fk_assistance_runs_user_thread",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "related_commitment_id"],
+            ["commitments.user_id", "commitments.id"],
+            name="fk_assistance_runs_user_commitment",
+        ),
+    )
+
+
+class AssistanceFeedback(Owned, Base):
+    __tablename__ = "assistance_feedback"
+    run_id: Mapped[str] = mapped_column(String(36))
+    external_id: Mapped[str] = mapped_column(String(100))
+    verdict: Mapped[str] = mapped_column(String(30))
+    __table_args__ = (
+        UniqueConstraint("user_id", "external_id", name="uq_assistance_feedback_user_external"),
+        UniqueConstraint("user_id", "id", name="uq_assistance_feedback_user_id_id"),
+        CheckConstraint(
+            "verdict in ('helpful','unhelpful','acknowledged','completed')",
+            name="ck_assistance_feedback_verdict",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "run_id"],
+            ["assistance_runs.user_id", "assistance_runs.id"],
+            name="fk_assistance_feedback_user_run",
+        ),
+    )
+
+
+class GrowthEvent(Owned, Base):
+    __tablename__ = "growth_events"
+    dimension: Mapped[str] = mapped_column(String(30))
+    event_type: Mapped[str] = mapped_column(String(60))
+    evidence_id: Mapped[str] = mapped_column(String(36))
+    assessment: Mapped[str] = mapped_column(String(30), default="milestone")
+    __table_args__ = (
+        CheckConstraint(
+            "dimension in ('understanding','judgement','capacity','relationship',"
+            "'human_empowerment')",
+            name="ck_growth_events_dimension",
+        ),
+        CheckConstraint(
+            "assessment in ('milestone','demonstrated_improvement')",
+            name="ck_growth_events_assessment",
+        ),
+        UniqueConstraint(
+            "user_id", "evidence_id", "event_type", name="uq_growth_events_user_evidence_type"
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "evidence_id"],
+            ["assistance_feedback.user_id", "assistance_feedback.id"],
+            name="fk_growth_events_user_evidence",
+        ),
     )
 
 

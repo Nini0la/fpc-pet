@@ -1,5 +1,24 @@
 # Security and privacy
 
+## Contextual Slice Amendment
+
+The live gateway adds an external data boundary: bounded relevant personal context and the
+current message are sent to the configured provider. Review that provider's retention policy
+before using real personal data. Server credentials are never exposed to the frontend.
+
+Per-turn UI permission gates live memory tools and pending journal/vocabulary capture. Tools
+are schema-validated and tenant-scoped with no external side effects. Existing deterministic
+development extraction is preserved, not silently advertised as a live model. Conversation
+storage itself is separate from permission to promote structured memory.
+
+Memory mutations cut off pre-mutation chat from future model prompts. Corrections serialize
+with generation using the tenant conversation lock; the post-tool prompt uses refreshed state.
+Thread revisions are scrubbed on deletion, and corrected/deleted journals invalidate their
+directly derived episodes. Source chat and backups remain separate retention surfaces.
+The full controls, cost risks and intentionally missing account-erasure/export features are
+listed in [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md). Earlier M5 notes below are historical
+where they refer to the absence of a provider or to scrubbed thread fields.
+
 - Identity is derived only from an opaque random HttpOnly session cookie. Clients never send authoritative user IDs. Production resolves the fixed `owner`; the username selector exists only in development/test for isolation testing. Session and CSRF values are hashed; cookies are SameSite=Strict and Secure in production.
 - Login compares the environment access code in constant time. Mutations require an exact allowlisted Origin plus double-submit CSRF. CORS uses exact configured origins, never wildcard credentials.
 - Production fails closed when required secrets/configuration are absent. Access codes, auth headers, raw prompts, chain-of-thought, and secrets are excluded from events and logs. Audit metadata contains observable actions/reasons only.

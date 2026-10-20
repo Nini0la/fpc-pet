@@ -12,8 +12,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .assistance import contextual_reply
 from .clock import Clock, SystemClock
 from .daily import EveningReflectionSkill, MorningBriefingSkill
+from .gateway import Gateway
 from .history import SharedHistoryRecallSkill
 from .models import (
     AgentEvent,
@@ -46,6 +48,8 @@ class RuntimeEvent:
     intended_local_date: date | None = None
     intended_at: datetime | None = None
     window_minutes: int | None = None
+    active_thread_id: str | None = None
+    allow_memory_write: bool = False
 
 
 class IdempotencyConflict(Exception):
@@ -60,10 +64,12 @@ class AgentRuntime:
     """The single entry point for reactive and scheduled events."""
 
     def __init__(
-        self, model: DeterministicModel | None = None, clock: Clock | None = None
+        self, model: DeterministicModel | None = None, clock: Clock | None = None,
+        gateway: Gateway | None = None,
     ) -> None:
         self.extractor = StateExtractor()
         self.model = model or DeterministicModel()
+        self.gateway = gateway
         self.clock = clock or SystemClock()
         self.history = SharedHistoryRecallSkill(self.clock)
         self.morning = MorningBriefingSkill()
@@ -89,6 +95,10 @@ class AgentRuntime:
         }
         if include_target:
             relevant["conversation_target"] = AgentRuntime._conversation_target(event)
+            # Preserve shipped fingerprints for requests with no new capabilities.
+            if event.active_thread_id is not None or event.allow_memory_write:
+                relevant["active_thread_id"] = event.active_thread_id
+                relevant["allow_memory_write"] = event.allow_memory_write
         return json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
@@ -139,6 +149,8 @@ class AgentRuntime:
         )
         legacy_matches = (
             is_unversioned_sha256
+            and not event.allow_memory_write
+            and event.active_thread_id is None
             and prior.kind == event.kind
             and any(
                 hmac.compare_digest(legacy_fingerprint, candidate)
@@ -206,7 +218,9 @@ class AgentRuntime:
                 content=event.content,
                 created_at=self.clock.now(),
             )
-            reflection_handled = self.evening.capture_if_pending(
+            reflection_handled = (
+                self.gateway is None or event.allow_memory_write
+            ) and self.evening.capture_if_pending(
                 db,
                 user_id,
                 recorded.id,
@@ -223,7 +237,7 @@ class AgentRuntime:
                     vocabulary_reply = (
                         "Thanks — I’ve carried that into tomorrow. " + vocabulary_prompt
                     )
-            else:
+            elif self.gateway is None or event.allow_memory_write:
                 vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
                     db, user_id, recorded.id, event.content, self.clock.now()
                 )
@@ -263,9 +277,9 @@ class AgentRuntime:
                         vocabulary_reply = self.vocabulary.contextual_reuse(event.content, reusable)
                         if vocabulary_reply is not None:
                             break
-            recalling_history = self.history.matches(event.content)
+            recalling_history = self.gateway is None and self.history.matches(event.content)
             episode_actor = self.history.actor_for(event.content)
-            if not recalling_history and episode_actor is not None:
+            if self.gateway is None and not recalling_history and episode_actor is not None:
                 episode = Episode(
                     user_id=user_id,
                     summary=" ".join(event.content.strip().split()),
@@ -289,7 +303,7 @@ class AgentRuntime:
                 )
             proposal = (
                 StateProposal("none")
-                if reflection_handled or vocabulary_handled
+                if reflection_handled or vocabulary_handled or self.gateway is not None
                 else self.extractor.extract(event.content)
             )
             target: Commitment | Thread | None = None
@@ -491,7 +505,15 @@ class AgentRuntime:
                     )
                     if isinstance(target, Commitment) and state == "complete":
                         transition_reply = f"Got it — I marked “{target.title}” complete."
-            if transition_reply:
+            assistance_run = None
+            if self.gateway is not None and not reflection_handled and not vocabulary_handled:
+                reply, assistance_run = contextual_reply(
+                    db, user_id, recorded.id, user_message.id, event.content,
+                    gateway=self.gateway, now=self.clock.now(),
+                    active_thread_id=event.active_thread_id,
+                    allow_write=event.allow_memory_write,
+                )
+            elif transition_reply:
                 reply = transition_reply
             elif vocabulary_reply:
                 reply = vocabulary_reply
@@ -543,7 +565,7 @@ class AgentRuntime:
                 )
             else:
                 reply = self.model.respond(event.content)
-            append_message(
+            assistant_message = append_message(
                 db,
                 user_id=user_id,
                 conversation_id=event.conversation_id,
@@ -552,6 +574,8 @@ class AgentRuntime:
                 content=reply,
                 created_at=self.clock.now(),
             )
+            if assistance_run is not None:
+                assistance_run.message_id = assistant_message.id
         elif event.kind in {"morning_briefing", "morning_trigger"}:
             logical_idempotent = not self.morning.run(
                 db,
@@ -589,6 +613,8 @@ class AgentRuntime:
                     if event.kind in {"morning_briefing", "morning_trigger"}
                     else self.prospective.name
                     if event.kind == "commitment_check"
+                    else "contextual-assistance"
+                    if event.kind == "user_message" and self.gateway is not None
                     else "shared-history-recall"
                     if event.kind == "user_message"
                     and event.content

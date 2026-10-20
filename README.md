@@ -1,4 +1,29 @@
-# Continuity — Milestone 5
+# Mystery Pet on Continuity
+
+The next slice adds contextual conversation to the existing Continuity foundation:
+
+- A named, persistent SVG companion in Chat, with calm/curious/playful expression.
+- Configurable OpenAI-compatible chat completions with native, server-validated tools.
+- Bounded current-state context, recent conversation, provenance and inspectable retrieval metadata.
+- Projects and linked creative ideas using existing Threads, with a WHY/WHAT/HOW Context Plate.
+- Per-message permission to save projects, ideas, corrections or commitments. Server receipts
+  distinguish successful actions from rejected operations; saving a commitment does not schedule delivery.
+- Versioned corrections, scrubbed revision content on deletion, and a short-term context cutoff
+  that prevents old transcripts from immediately reintroducing corrected/deleted information.
+- Explicit assistance feedback, one deterministic adaptation rule, and evidence-backed milestones.
+- Token/cost/latency diagnostics and a six-scenario offline/live comparative evaluation harness.
+
+**Azure OpenAI is now live-verified** using a GPT-5.4 deployment: actual project/idea tools,
+fresh-session recall, corrected-memory use, and feedback adaptation were exercised with
+synthetic data. Automated regression tests still use scripted responses or a loopback server.
+See [Azure configuration](docs/AZURE_OPENAI.md).
+`MODEL_MODE=deterministic` preserves the existing development/test behavior and is clearly labeled
+in the UI. No automatic scheduler, public registration, or claimed improvement in intelligence is added.
+
+See [the slice review and walkthrough](docs/MYSTERY_PET_SLICE.md) for the reconciliation,
+trade-offs, permission/retention boundaries, validation commands, and remaining gaps.
+
+## Preserved Continuity Foundation
 
 A narrow personal-AI prototype that carries explicit commitments, threads, shared episodes, and a daily morning/evening loop forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
 
@@ -33,14 +58,26 @@ M1–M3 continuity behavior remains available:
 
 ## Run locally
 
-1. Copy `.env.example` to `.env` and replace every secret. Never place `ACCESS_CODE` in frontend source or a `NEXT_PUBLIC_*` variable.
-2. `docker compose up -d db`
+1. If `.env` does not exist, copy `.env.example` and configure it. Preserve an existing local configuration. Never place `ACCESS_CODE` in frontend source or a `NEXT_PUBLIC_*` variable.
+2. Start the PostgreSQL instance specified by `DATABASE_URL` (for the example configuration: `docker compose up -d db`).
 3. `cd backend && uv sync --extra dev && set -a && source ../.env && set +a && uv run alembic upgrade head && uv run uvicorn app.main:app --reload`
 4. `cd frontend && npm ci && npm run dev`
 
-Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through M4 (`0006`). If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development fallback. Migration URLs are never logged.
+Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through `0009`.
+If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development
+fallback. Migration URLs are never logged.
 
-Production fails closed unless the database URL, access code, a 32+ character session secret, and exact CORS origins are present. Set `APP_ENV=production`; cookies are Secure in production. The deterministic adapter (`MODEL_MODE=deterministic`) is only a development/test response stub and is rejected in production. No live Nebius/Nemotron use is claimed yet.
+Production fails closed unless the database URL, access code, a 32+ character session secret,
+exact CORS origins, and valid live-model configuration are present. Set `APP_ENV=production`;
+cookies are Secure in production. Configure `MODEL_MODE=live`, `MODEL_BASE_URL`, `MODEL_API_KEY`,
+and `MODEL_NAME` for a tool-capable OpenAI-compatible provider. The key is server-side only.
+For Azure, use `PROVIDER=azure_openai` with the settings in `docs/AZURE_OPENAI.md`.
+Azure GPT-5.4 has been live-verified; Nebius/Nemotron has not.
+The deterministic adapter remains development/test-only and is rejected in production.
+
+Always run `uv run alembic upgrade head` before starting an existing database; the new head is
+`0009`. Migration conservatively excludes pre-upgrade chat from model context while retaining
+the visible transcript and current structured records.
 
 ## Verify
 

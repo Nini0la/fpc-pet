@@ -1,4 +1,18 @@
-# Implementation status — Milestone 5
+# Implementation Status
+
+## Current: Contextual Mystery Pet Slice
+
+The active milestone is documented in [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md).
+It adds a configurable provider, bounded context, authorized creative tools, revisions,
+assistance feedback, evidence-linked milestones, pet presentation, and comparative evaluation.
+Azure GPT-5.4 is now connected and the synthetic creative/correction workflow is live-verified;
+see [AZURE_OPENAI.md](AZURE_OPENAI.md). Broad real-user quality remains unassessed.
+Automated regression tests use test doubles and a loopback server. The complete automatic
+accountability/reminder-delivery workflow remains deferred.
+
+The following section records the earlier M5 handoff, not the current provider boundary.
+
+## Historical Milestone 5
 
 ## Delivered
 
