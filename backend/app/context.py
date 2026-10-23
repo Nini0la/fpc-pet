@@ -27,6 +27,7 @@ from app.models import (
     JournalEntry,
     Message,
     ProvenanceLink,
+    Responsibility,
     Thread,
     User,
 )
@@ -176,6 +177,16 @@ def build_context(
 
         # Entries carry a link priority, exact lexical score and recency tie-break.
         candidates: list[tuple[Any, str, int, int, str]] = []
+        delegation_score = lexical_score((
+            Responsibility.recipient_name, Responsibility.last_report,
+        ))
+        delegation_query = select(Responsibility.commitment_id).where(
+            Responsibility.user_id == user_id,
+            Responsibility.state.not_in(("cancelled", "verified"))
+            if set(terms) & {"responsibility", "responsibilities", "delegated", "delegation"}
+            else delegation_score > 0,
+        ).order_by(delegation_score.desc(), Responsibility.created_at.desc()).limit(20)
+        delegated_ids = set(db.scalars(delegation_query))
         thread_score = lexical_score((Thread.title, Thread.description, Thread.why,
                                       Thread.next_action))
         active_ids = {active.id} if active else set()
@@ -228,7 +239,8 @@ def build_context(
         ).exists()
         for model, kind, columns, linked, recency in (
             (Commitment, "commitment", (Commitment.title,),
-             Commitment.related_thread_id.in_(thread_ids), Commitment.last_touched_at),
+             or_(Commitment.related_thread_id.in_(thread_ids), Commitment.id.in_(delegated_ids)),
+             Commitment.last_touched_at),
             (Episode, "episode", (Episode.summary,), episode_link, Episode.created_at),
             (JournalEntry, "journal", (journal_content,), false(), JournalEntry.updated_at),
         ):
@@ -241,6 +253,8 @@ def build_context(
                 .limit(CANDIDATES_PER_TYPE).execution_options(populate_existing=True))
             for record, link, matches in rows:
                 candidates.append((record, kind, link, matches,
+                                   "responsibility_match" if kind == "commitment"
+                                   and record.id in delegated_ids else
                                    "thread_link" if link else "lexical_match"))
 
         def rank(item: tuple[Any, str, int, int, str]) -> tuple[Any, ...]:
@@ -280,7 +294,24 @@ def build_context(
                                                if record.related_thread_id in thread_ids else None),
                             due_at=record.due_at.isoformat() if record.due_at else None,
                             estimated_effort_minutes=record.estimated_effort_minutes,
-                            confidence=record.confidence)
+                             confidence=record.confidence)
+                delegated = db.scalar(select(Responsibility).where(
+                    Responsibility.user_id == user_id,
+                    Responsibility.commitment_id == record.id,
+                ))
+                if delegated:
+                    data["responsibility"] = {
+                        "id": delegated.id, "state": delegated.state,
+                        "assignee": delegated.recipient_name[:100],
+                        "last_report": delegated.last_report[:200],
+                        "attention_reason": delegated.attention_reason,
+                        "verified_by_owner": delegated.verified_at is not None,
+                        "contact_authorized": delegated.approved_at is not None,
+                        "next_action_at": delegated.next_action_at.isoformat()
+                        if delegated.next_action_at else None,
+                        "followups_sent": delegated.followup_count,
+                        "max_followups": delegated.max_followups,
+                    }
                 fields = ("title",)
             elif kind == "episode":
                 data.update(summary=record.summary, actor=record.actor,

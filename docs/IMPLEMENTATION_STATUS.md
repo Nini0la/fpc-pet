@@ -1,6 +1,25 @@
 # Implementation Status
 
-## Current: Contextual Mystery Pet Slice
+## Current: Operational Responsibilities
+
+See [OPERATIONS.md](OPERATIONS.md). A deterministic delegation workflow extends Commitments,
+with explicit external-contact authorization, durable scheduling and communication journals,
+a channel-isolated Baileys service, and reported-vs-owner-verified completion. Migration `0011`
+adds the operational records. Live pairing was subsequently verified against the dedicated
+assistant account, with a recent worker heartbeat. The real recipient send/reply acceptance
+test remains pending. General WhatsApp chat and automatic LLM retries are not implemented.
+The earlier inspector work is preserved.
+
+## Response-Level Context Inspection
+
+History assistant responses and Chat expose a private **View context** inspector. New responses
+capture actual model inputs per call, selected sources, tool execution evidence, model output,
+and usage. Old uncaptured responses are explicitly marked unavailable. Migration `0010` reuses
+AssistanceRun rather than creating a separate observability database. See
+[RESPONSE_CONTEXT.md](RESPONSE_CONTEXT.md). Langfuse/Phoenix are not integrated.
+The Discord plan is saved separately in [DISCORD_PLAN.md](DISCORD_PLAN.md).
+
+## Contextual Mystery Pet Slice
 
 The active milestone is documented in [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md).
 It adds a configurable provider, bounded context, authorized creative tools, revisions,

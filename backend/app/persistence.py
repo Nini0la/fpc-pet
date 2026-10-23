@@ -9,7 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import ConversationSession, Message, User, utcnow
+from .models import AssistanceRun, ConversationSession, Message, User, utcnow
 
 
 class MutationResult(Enum):
@@ -113,6 +113,12 @@ def atomic_update(
         # Old chat may repeat corrected or deleted memory. Only later messages may
         # enter subsequent model context; the visible transcript stays unchanged.
         db.execute(update(User).where(User.id == user_id).values(context_reset_at=utcnow()))
+        if values.get("deleted") is True:
+            # Raw prompts can contain source chat as well as derived records; purge all
+            # of this tenant's snapshots rather than risk incomplete dependency matching.
+            db.execute(update(AssistanceRun).where(
+                AssistanceRun.user_id == user_id, AssistanceRun.trace_status == "captured",
+            ).values(context_trace=None, trace_status="cleared_by_memory_deletion"))
         db.expire_all()
         return MutationResult.UPDATED
     exists = db.scalar(

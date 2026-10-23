@@ -1,5 +1,23 @@
 # Architecture
 
+## Operational Responsibility Boundary
+
+`Responsibility` extends an existing Commitment rather than duplicating its title/deadline.
+The channel-neutral workflow authorizes a versioned/hash-bound scope, persists an outbox, schedules
+follow-through, interprets external replies, and produces attention events in the existing audit/chat.
+`CommunicationChannel` abstracts transport. A separate Node/Baileys service owns WhatsApp protocol,
+private SQLite authentication/session state, message journaling and reconnection. See
+[OPERATIONS.md](OPERATIONS.md) for the state machine, failure semantics and service setup.
+
+## Response Inspection
+
+Revision `0010` adds a private JSON capture to the existing AssistanceRun, linked to its
+assistant Message. `ResponseTrace` captures each gateway request and result, along with
+intermediate tool execution evidence. `request_payload()` is shared with the actual provider
+transport; the inspector never rebuilds old prompts from current state. This content is
+available only through the dedicated tenant-scoped context endpoint. General diagnostics
+remain metadata-only. See [RESPONSE_CONTEXT.md](RESPONSE_CONTEXT.md).
+
 ## Current Extension
 
 See [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md) for the current reconciliation and limits.

@@ -38,6 +38,7 @@ from .models import (
     ProvenanceLink,
     ReflectionPrompt,
     Reminder,
+    ResponsibilityEvent,
     Session,
     Thread,
     ThreadRevision,
@@ -46,6 +47,7 @@ from .models import (
     VocabularyItem,
     utcnow,
 )
+from .operations_api import operations_router
 from .persistence import MutationResult, atomic_update, get_or_create_conversation
 from .prospective import urgency_for
 from .security import resolve_login_username
@@ -462,6 +464,10 @@ def messages(
     page = rows[:limit]
     if mode == "latest":
         page = list(reversed(page))
+    proactive_ids.update(db.scalars(select(ResponsibilityEvent.details["message_id"].as_string()).where(
+        ResponsibilityEvent.user_id == user.id, ResponsibilityEvent.kind == "attention",
+        ResponsibilityEvent.details["message_id"].as_string().in_([item.id for item in page]),
+    )).all())
     has_more = len(rows) > limit
     response.headers["X-Has-More"] = str(has_more).lower()
     next_item = page[0] if mode == "latest" and page else page[-1] if page else None
@@ -489,6 +495,51 @@ def messages(
             "returned_count": len(items),
         }
     return items
+
+
+def owned_assistant_message(db: DBSession, user: User, message_id: str) -> Message:
+    message = db.scalar(select(Message).where(
+        Message.id == message_id, Message.user_id == user.id, Message.role == "assistant",
+    ))
+    if message is None:
+        raise HTTPException(404, "Not found")
+    return message
+
+
+@app.get("/api/chat/messages/{message_id}/context")
+def response_context(
+    message_id: str, response: Response,
+    db: DBSession = Depends(db_session), user: User = Depends(current_user),
+):
+    message = owned_assistant_message(db, user, message_id)
+    run = db.scalar(select(AssistanceRun).where(
+        AssistanceRun.user_id == user.id, AssistanceRun.message_id == message.id,
+    ))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Cookie"
+    return {
+        "message_id": message.id, "response": message.content, "created_at": message.created_at,
+        "status": run.trace_status if run else "not_recorded",
+        "trace": run.context_trace if run and run.trace_status == "captured" else None,
+        "run_id": run.id if run else None,
+        "policy": run.policy if run else None,
+        "intervention_type": run.intervention_type if run else None,
+    }
+
+
+@app.delete(
+    "/api/chat/messages/{message_id}/context", status_code=204,
+    dependencies=[Depends(mutation_guard)],
+)
+def clear_response_context(
+    message_id: str, db: DBSession = Depends(db_session), user: User = Depends(current_user),
+):
+    owned_assistant_message(db, user, message_id)
+    db.execute(update(AssistanceRun).where(
+        AssistanceRun.user_id == user.id, AssistanceRun.message_id == message_id,
+        AssistanceRun.trace_status == "captured",
+    ).values(context_trace=None, trace_status="cleared_by_user"))
+    db.commit()
 
 
 def item_dict(x: Any) -> dict[str, Any]:
@@ -1702,3 +1753,6 @@ def scheduled(
         raise HTTPException(409, str(error)) from error
     except OperationalError as error:
         raise_retryable_database_conflict(db, error)
+
+
+app.include_router(operations_router(db_session, current_user, mutation_guard, runtime))

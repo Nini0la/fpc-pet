@@ -20,6 +20,10 @@ jobs:
         with: {python-version: "3.11"}
       - run: uv sync --extra dev
         working-directory: backend
+      - uses: actions/setup-node@v4
+        with: {node-version: "24", cache: npm, cache-dependency-path: whatsapp-bridge/package-lock.json}
+      - run: npm ci && npm test && npm audit --omit=dev
+        working-directory: whatsapp-bridge
       - run: uv run pytest -q && uv run ruff check app tests && uv run mypy app
         env:
           POSTGRES_TEST_URL: postgresql+psycopg://continuity:continuity@127.0.0.1:5432/continuity_test
