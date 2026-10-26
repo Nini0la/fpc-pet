@@ -1,6 +1,190 @@
 # Implementation Status
 
-## Current: Contextual Mystery Pet Slice
+## Milestone 01 — Functional Autonomy: ISOLATED STACK VERIFIED, OWNER ACCEPTANCE PENDING
+
+Governing documents: `MICA_TARGET.md` and `milestones/01_AUTONOMY.md`, read in full and copied
+byte-for-byte from the supplied ZIP. No Milestone 2/3 implementation is authorized by this work.
+
+### Verified starting point
+
+- Inspected `feat/mystery-pet-context` at `d58b2ef` and `feat/operational-responsibilities` at
+  `cef953f`. The former contains the new personality/security patches; the latter contains
+  response inspection, delegated workflows, the worker and Baileys adapter. They diverged at
+  `97c0dc7`; the current processes exposed the operational API while the checkout served the
+  older frontend. The branch/runtime mismatch was real.
+- `app/agent.py` uses one event ingress with per-user idempotency and ordered message writes.
+  `app/assistance.py` provides Azure-backed tool calls, but its commitment tool only creates;
+  there is no live conversational amend/complete/pause/resume/cancel tool.
+- `app/prospective.py:parse_commitment_timing` handles ISO dates, weekdays and effort but not
+  “before 9pm tomorrow” or weekday clocks. `next Friday afternoon` is currently reduced to a
+  guessed date-only deadline instead of asking about the ambiguous time of day.
+- `MorningBriefingSkill` / `EveningReflectionSkill` in `app/daily.py` are real persisted,
+  idempotent handlers, but no worker invokes their stored times. The Power List still uses
+  `deadline_hint` and creation-age proxies rather than the current urgency fields.
+- `app/operations_worker.py` on the operational branch handles only a configured channel's
+  delegated responsibilities. It has no owner commitment or daily-routine scheduler.
+- PostgreSQL already owns commitments, threads, journals, provenance, feedback and operational
+  messages. Existing single-owner production login deliberately resolves to `owner`
+  (`app/security.py`); this remains a private application, not multi-user authentication.
+
+Baseline commands (isolated native PostgreSQL test database, no personal-data mutation):
+
+```text
+createdb mica_autonomy_test
+POSTGRES_TEST_URL=postgresql+psycopg:///mica_autonomy_test uv run pytest -q
+  472 passed in 63.91s (initial mystery-pet-context branch)
+npm test -- --maxWorkers=1 --testTimeout=30000
+  48 passed (initial frontend)
+```
+
+### One implementation path
+
+1. Consolidate the existing branches on `feat/functional-autonomy`, retaining the personality,
+   patched frontend dependencies, response traces, responsibilities and authorization boundaries.
+   Merge is prepared without creating a commit; no existing branch is overwritten.
+2. Extend Commitment minimally for purpose, next action, timing bounds, constraints/availability,
+   and opted-in follow-through. Add owner-scoped lifecycle tools and correction provenance.
+3. Add a durable scheduled-action ledger with leases, bounded attempts and stable keys. In-app
+   effects and authoritative state changes commit atomically; reuse existing daily skills and
+   preserve the separate authorized responsibility/channel path.
+4. Add explicit owner opt-ins and compact Today/history controls. New self-directed actions use
+   in-app delivery; configured WhatsApp is not treated as permission to send.
+5. Verify S1–S9 with injected clocks, PostgreSQL races/failure injection, and an isolated running
+   Azure/API/worker smoke. Only then update the gate; owner real-world acceptance stays pending.
+
+### Acceptance ledger
+
+| Scenario | Status | Evidence |
+| --- | --- | --- |
+| S1 Natural intention | PASS: PostgreSQL/API fixture + live Azure | Exactly one presentation; `2026-10-27T20:00Z` exclusive boundary (before 21:00 Lagos), next check and message provenance; fresh session |
+| S2 Updates/completion | PASS: fixture + live Azure | Thursday 18:00 Lagos correction; old actions cancelled; completed state and no future check; explicit reopen |
+| S3 Unattended action | PASS: real worker subprocess | API/browser stopped during wake; one persisted in-app Message with event/action evidence; duplicate sweep adds nothing |
+| S4 Restart/duplicates | PASS: PostgreSQL fault injection/concurrency | Four crash stages, new runtime/sessions and overlapping workers; one observable in-app effect; bounded retry/backoff; claimed-plan cancellation |
+| S5 Meaningful replanning | PASS: fixture + live Azure | Purpose preserved; evenings blocked through 2026-11-01; next action/check replanned; old plan suppressed |
+| S6 Daily routines | PASS: fixture + real worker subprocesses | Morning/evening each recur once on Oct 28/29; duplicate sweeps deduplicated; disabling stops next-day work |
+| S7 Permission boundaries | PASS: deterministic/fake-channel tests | Unsupported external action records unauthorized skip; read-only chat cannot mutate; existing scope/bridge regressions pass |
+| S8 Regressions/coherency | PASS on isolated integrated stack; personal rollout pending | 525 backend / 65 frontend / 12 bridge; migrations, type/lint/audits/build; real Chromium → Next 16.4.3 → current API/schema |
+| S9 Inspection/controls | PASS: API + real mobile Chromium | Status/next check, correction sources, action history; reopen/pause/resume/cancel persisted across reload; no page errors or horizontal overflow |
+
+### Implementation and observed proof (2026-10-26)
+
+- Current branch: `feat/functional-autonomy`, based on `d58b2ef`, with the prepared merge of
+  `cef953f`. No commit/push was requested or performed. The branch's source now combines personality,
+  patched dependencies, raw response inspection, approved responsibilities and personal autonomy.
+- Migration `0012` adds default-off preferences, modest Commitment plan/follow-up fields, versioned
+  `CommitmentRevision` and durable `ScheduledAction`. Shared lifecycle validation is in
+  `backend/app/commitments.py`; scheduler/policy/API are `scheduler.py`, `autonomy.py`,
+  `autonomy_api.py`. Existing AgentRuntime/daily skills are used for actual effects.
+- `frontend/app/autonomy.tsx` extends Today with opt-ins, quiet hours, plan correction, lifecycle
+  controls and outcome history. Existing Chat displays actual unattended messages. See
+  [AUTONOMY.md](AUTONOMY.md) for rollout, permission limits, retry semantics and rollback.
+
+Final automatic checks:
+
+```text
+backend/: POSTGRES_TEST_URL=postgresql+psycopg:///mica_autonomy_test uv run pytest -q --tb=short
+  525 passed in 78.44s
+backend/: uv run ruff check app tests
+  All checks passed
+backend/: uv run mypy app
+  Success: no issues found in 29 source files
+backend/: DATABASE_URL=postgresql+psycopg:///mica_autonomy_smoke_test uv run alembic current
+  0012 (head)
+frontend/: npm test -- --maxWorkers=1 --testTimeout=30000
+  65 passed, 10 files
+frontend/: npm run typecheck; npm run lint; npm run audit:ci
+  Passed; full dependency audit clean
+frontend/: NEXT_PUBLIC_API_URL=http://127.0.0.1:8012 npm run build
+  Next.js 16.4.3 production build passed
+whatsapp-bridge/: npm test; npm audit --omit=dev
+  12 passed; 0 vulnerabilities
+repo/: git diff --check
+  Passed
+```
+
+Live proof command (isolated migrated `mica_autonomy_smoke_test`, ports 8012/3002):
+
+```sh
+DATABASE_URL=postgresql+psycopg:///mica_autonomy_smoke_test \
+PLAYWRIGHT_MODULE_PATH=/var/folders/2z/k510lmwj7g70_lk9nzmrw8jc0000gn/T/opencode/mystery-pet-smoke/node_modules/playwright \
+uv run python tests/live_autonomy_smoke.py --with-browser
+```
+
+Observed output:
+
+```text
+Azure: gpt-5.4-2026-03-05
+create_commitment saved version 1
+fresh-session deadline retrieval: delivered, no state mutation
+update_commitment updated version 2 (deadline)
+update_commitment updated version 3 (availability)
+update_commitment completed version 4; delivery none
+Browser PASS: current state, corrections, reopen/pause/resume/cancel, in-app evidence, reload, mobile width
+PASS: username autonomy-smoke-698a801b3769
+commitment_id 15b23596-efd1-410d-a510-447bc2d3f76d
+verified_effects 5; revisions 4 before browser controls; browser true; external_sends 0
+```
+
+The five effects are one check-in plus two morning and two evening outputs. Real Azure handled
+the five conversational turns (nine bounded model calls total); deterministic scheduler decisions
+used no inference. The smoke stops/restarts the actual API, authenticates a fresh client and invokes
+fresh worker processes, including while the API/browser are absent. The browser uses the same
+synthetic owner's real API/database records, not frontend mocks. Browser controls create additional
+revisions and leave the synthetic commitment cancelled. All test-owner opt-ins end disabled.
+
+Findings corrected during verification:
+
+- Initial merged regression run: 493 passes, 13 old-contract failures (read receipts/tool lists,
+  migration head, normalized deadline semantics). Updated assertions preserve their original
+  regression purpose and test explicit new contracts; final full suite passes.
+- First live S1 smoke asked for redundant confirmation and saved nothing. The prompt did not tell
+  the model that available write tools signal the already-enabled UI permission. Clarified that
+  authoritative rule and that a definite intention plus “help me stay on track” requests tracking;
+  backend permission and ambiguity validation remain enforced. The final live capture passed.
+- A subsequent smoke completed backend scenarios but the local cached Playwright package was
+  incomplete. Reinstalled only in the temporary tools directory; Chromium launch and final real
+  browser smoke passed. This was not treated as product acceptance before rerunning.
+
+### Remaining gates and limits
+
+- **Owner trial/approval and authorized personal-stack rollout are pending.** The personal
+  `mystery_pet` database was not migrated and the existing API/paired WhatsApp processes were not
+  restarted. The isolated integrated stack was verified and its test processes then stopped.
+  The original personal runtime mismatch is therefore not claimed to be deployed away.
+- Check-ins are in-app, not push/WhatsApp. Exactly-once evidence is for the transactional database
+  effect. External-channel tests use fake transport; real recipient send/reply acceptance remains
+  pending. Single-owner auth/privacy remains private; test usernames are not multi-user security.
+- Date parsing deliberately asks about ambiguous dates/periods; constraints/replanning are bounded.
+  The UI lists the latest 100 records and the scheduler has a bounded candidate scan. A permanently
+  failed action needs inspection/plan correction rather than hidden unlimited retries.
+- Do not reuse the smoke frontend build for personal deployment: rebuild with its correct API URL.
+  Review migration/disable instructions in `AUTONOMY.md`, authorize rollout, then perform the real
+  capture → unattended follow-up → correction → completion trial before accepting Milestone 1.
+
+Owner trial and milestone approval: **pending**. No external third-party messages, Nebius
+inference, Hermes or Letta are part of acceptance testing. Earlier sections below are historical
+handoffs, not evidence that this new milestone is complete.
+
+## Current: Operational Responsibilities
+
+See [OPERATIONS.md](OPERATIONS.md). A deterministic delegation workflow extends Commitments,
+with explicit external-contact authorization, durable scheduling and communication journals,
+a channel-isolated Baileys service, and reported-vs-owner-verified completion. Migration `0011`
+adds the operational records. Live pairing was subsequently verified against the dedicated
+assistant account, with a recent worker heartbeat. The real recipient send/reply acceptance
+test remains pending. General WhatsApp chat and automatic LLM retries are not implemented.
+The earlier inspector work is preserved.
+
+## Response-Level Context Inspection
+
+History assistant responses and Chat expose a private **View context** inspector. New responses
+capture actual model inputs per call, selected sources, tool execution evidence, model output,
+and usage. Old uncaptured responses are explicitly marked unavailable. Migration `0010` reuses
+AssistanceRun rather than creating a separate observability database. See
+[RESPONSE_CONTEXT.md](RESPONSE_CONTEXT.md). Langfuse/Phoenix are not integrated.
+The Discord plan is saved separately in [DISCORD_PLAN.md](DISCORD_PLAN.md).
+
+## Contextual Mystery Pet Slice
 
 The active milestone is documented in [MYSTERY_PET_SLICE.md](MYSTERY_PET_SLICE.md).
 It adds a configurable provider, bounded context, authorized creative tools, revisions,

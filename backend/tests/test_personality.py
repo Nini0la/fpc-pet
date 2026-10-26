@@ -50,6 +50,9 @@ def test_saved_temperament_reaches_both_model_calls_without_altering_tools(
         "save_idea",
         "update_thread",
         "create_commitment",
+        "update_commitment",
+        "get_commitments",
+        "draft_responsibility",
         "retrieve_context",
     }
     assert final["tools"] == []
@@ -81,7 +84,9 @@ def test_personality_does_not_turn_explanations_into_unrequested_memory(client, 
     assert "sorting notes before drawing" in json.dumps(context["recent_conversation"])
     assert client.get("/api/threads").json() == []
     assert client.get("/api/commitments").json() == []
-    assert {tool["function"]["name"] for tool in gateway.calls[-1]["tools"]} == {"retrieve_context"}
+    assert {tool["function"]["name"] for tool in gateway.calls[-1]["tools"]} == {
+        "retrieve_context", "get_commitments",
+    }
 
 
 def test_offline_personality_review_does_not_claim_generated_behavior(monkeypatch):

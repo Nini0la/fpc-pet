@@ -24,6 +24,7 @@ class ParsedTiming:
     source_phrase: str | None = None
     estimated_effort_minutes: int | None = None
     ambiguity: str = "none"
+    bound: str = "inclusive"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,8 @@ _WEEKDAYS = {
     "saturday": 5,
     "sunday": 6,
 }
+
+
 def _zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)
@@ -92,9 +95,27 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
     if re.search(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b", text):
         return ParsedTiming(estimated_effort_minutes=effort, ambiguity="ambiguous_numeric_date")
 
+    # A named period is not an exact deadline. Keep the phrase and ask for a time.
+    period = re.search(r"\b(morning|afternoon|evening|tonight|later|sometime)\b", text, re.I)
+    temporal_cue = re.search(
+        r"\b(today|tomorrow|tonight|next|deadline|by|before|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+        text,
+        re.I,
+    )
+    if (
+        period
+        and temporal_cue
+        and not re.search(r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{2}:\d{2}\b", text, re.I)
+    ):
+        return ParsedTiming(
+            source_phrase=text.strip()[:500],
+            estimated_effort_minutes=effort,
+            ambiguity="ambiguous_time_of_day",
+        )
+
     iso_match = re.search(
-        r"\b(?:by|before|on)\s+(\d{4}-\d{2}-\d{2})"
-        r"(?:[ T](\d{2}):(\d{2})(Z|[+-]\d{2}:\d{2})?)?(?![\d:+-])",
+        r"\b(?:(?:by|before|on|to)\s+)?(\d{4}-\d{2}-\d{2})"
+        r"(?:(?:[ T]|\s+at\s+)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(Z|[+-]\d{2}:\d{2})?)?(?![\d:+-])",
         text,
         re.I,
     )
@@ -104,8 +125,19 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
             day = datetime.strptime(iso_match.group(1), "%Y-%m-%d").date()
             if iso_match.group(2):
                 hour = int(iso_match.group(2))
-                minute = int(iso_match.group(3))
-                offset = iso_match.group(4)
+                minute = int(iso_match.group(3) or 0)
+                meridian = iso_match.group(4)
+                offset = iso_match.group(5)
+                if meridian:
+                    if not 1 <= hour <= 12:
+                        raise ValueError
+                    hour = hour % 12 + (12 if meridian.casefold() == "pm" else 0)
+                elif iso_match.group(3) is None:
+                    return ParsedTiming(
+                        source_phrase=source_phrase,
+                        estimated_effort_minutes=effort,
+                        ambiguity="ambiguous_clock",
+                    )
                 if offset:
                     local_due = datetime.fromisoformat(
                         f"{day.isoformat()}T{hour:02d}:{minute:02d}"
@@ -123,6 +155,8 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
                     local_due = resolved_due
                 granularity = "minute"
             else:
+                if re.match(r"(?:T|\s+(?:at\s+)?\d)", text[iso_match.end() :]):
+                    raise ValueError
                 local_due = datetime.combine(day, time(23, 59, 59), zone)
                 granularity = "date"
         except ValueError:
@@ -131,7 +165,10 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
                 estimated_effort_minutes=effort,
                 ambiguity="invalid_explicit_datetime",
             )
-        return ParsedTiming(_utc(local_due), granularity, source_phrase, effort, "none")
+        bound = "exclusive" if re.search(r"\bbefore\b", source_phrase, re.I) else "inclusive"
+        if granularity == "date" and bound == "exclusive":
+            local_due = datetime.combine(day, time(0, 0), zone)
+        return ParsedTiming(_utc(local_due), granularity, source_phrase, effort, "none", bound)
 
     weekday_match = re.search(
         r"\b(before|by|on)?\s*(next\s+)?"
@@ -139,17 +176,67 @@ def parse_commitment_timing(text: str, now: datetime, timezone_name: str) -> Par
         text,
         re.I,
     )
-    if weekday_match:
-        target = _WEEKDAYS[weekday_match.group(3).lower()]
-        delta = (target - local_now.weekday()) % 7
-        if delta == 0:
-            delta = 7
-        if weekday_match.group(2):
-            delta += 7
-        day = local_now.date() + timedelta(days=delta)
-        local_due = datetime.combine(day, time(23, 59, 59), zone)
+    relative = re.search(r"\b(today|tomorrow)\b", text, re.I)
+    if weekday_match or relative:
+        if relative:
+            day = local_now.date() + timedelta(days=relative.group(1).lower() == "tomorrow")
+            date_match = relative
+        else:
+            assert weekday_match is not None
+            if weekday_match.group(2):
+                return ParsedTiming(
+                    source_phrase=weekday_match.group(0).strip(),
+                    estimated_effort_minutes=effort,
+                    ambiguity="ambiguous_next_weekday",
+                )
+            target = _WEEKDAYS[weekday_match.group(3).lower()]
+            delta = (target - local_now.weekday()) % 7
+            day = local_now.date() + timedelta(days=delta)
+            date_match = weekday_match
+        clock_match = re.search(
+            r"\b(?:(before|by|at)\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b"
+            r"|\b(?:(before|by|at)\s+)?(\d{1,2}):(\d{2})\b",
+            text,
+            re.I,
+        )
+        bound = "exclusive" if re.search(r"\bbefore\b", text, re.I) else "inclusive"
+        start, end = date_match.span()
+        if clock_match:
+            start, end = min(start, clock_match.start()), max(end, clock_match.end())
+            hour = int(clock_match.group(2) or clock_match.group(6))
+            minute = int(clock_match.group(3) or clock_match.group(7) or 0)
+            meridian = clock_match.group(4)
+            if minute > 59 or (meridian and not 1 <= hour <= 12) or (not meridian and hour > 23):
+                return ParsedTiming(
+                    source_phrase=text[start:end],
+                    estimated_effort_minutes=effort,
+                    ambiguity="invalid_explicit_datetime",
+                )
+            if meridian:
+                hour = hour % 12 + (12 if meridian.lower() == "pm" else 0)
+            resolved, ambiguity = _local_wall_time(day, hour, minute, zone)
+            if resolved is None:
+                return ParsedTiming(
+                    source_phrase=text[start:end],
+                    estimated_effort_minutes=effort,
+                    ambiguity=ambiguity,
+                )
+            return ParsedTiming(_utc(resolved), "minute", text[start:end], effort, "none", bound)
+        if re.search(r"\b(?:at|before|by)\s+\d{1,2}(?!\d)|\b\d{1,2}\s*[ap]\.m", text, re.I):
+            return ParsedTiming(
+                source_phrase=text.strip()[:500],
+                estimated_effort_minutes=effort,
+                ambiguity="ambiguous_clock",
+            )
+        local_due = datetime.combine(
+            day, time(0, 0) if bound == "exclusive" else time(23, 59, 59), zone
+        )
+        return ParsedTiming(_utc(local_due), "date", text[start:end].strip(), effort, "none", bound)
+    if re.search(r"\b(?:deadline|before|by|next week)\b", text, re.I):
         return ParsedTiming(
-            _utc(local_due), "date", weekday_match.group(0).strip(), effort, "none"
+            source_phrase=text.strip()[:500],
+            estimated_effort_minutes=effort,
+            ambiguity="unresolved_deadline",
         )
     return ParsedTiming(estimated_effort_minutes=effort)
 
@@ -169,9 +256,7 @@ def urgency_for(commitment: Commitment, now: datetime) -> Urgency:
             slack_hours = due_hours - math.ceil(effort / 60)
     touched_at = commitment.last_touched_at or commitment.created_at
     inactivity = max(0, (now.date() - touched_at.date()).days)
-    blocked = sum(
-        1 for item in (commitment.dependencies or []) if item.get("kind") == "blocked"
-    )
+    blocked = sum(1 for item in (commitment.dependencies or []) if item.get("kind") == "blocked")
     factors: dict[str, int | None] = {
         "deadline_hours": due_hours,
         "effort_minutes": effort,
@@ -186,13 +271,7 @@ def urgency_for(commitment: Commitment, now: datetime) -> Urgency:
         score += 60 if due_hours <= 0 else 40 if due_hours <= 48 else 20 if due_hours <= 168 else 5
     if slack_hours is not None:
         score += (
-            40
-            if slack_hours <= 0
-            else 25
-            if slack_hours <= 48
-            else 10
-            if slack_hours <= 168
-            else 0
+            40 if slack_hours <= 0 else 25 if slack_hours <= 48 else 10 if slack_hours <= 168 else 0
         )
     if commitment.available_minutes is not None and effort is not None:
         score += 20 if commitment.available_minutes < effort else 0
@@ -266,8 +345,7 @@ class ProspectiveReminderSkill:
             )
         commitments = list(
             db.scalars(
-                query
-                .order_by(Commitment.created_at, Commitment.id)
+                query.order_by(Commitment.created_at, Commitment.id)
                 .limit(self.scan_limit)
                 .with_for_update()
             )

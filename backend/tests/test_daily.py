@@ -126,7 +126,9 @@ def test_morning_event_persists_one_structured_briefing_in_the_same_chat():
         assert briefing.local_date == date(2026, 9, 30)
         assert len(briefing.power_list) == 2
         assert briefing.power_list[0]["title"] == "Submit demo"
-        assert "deadline" in briefing.power_list[0]["reason"]
+        # Legacy free-text hints are not authoritative normalized deadlines.
+        assert "current urgency" in briefing.power_list[0]["reason"]
+        assert "deadline" not in briefing.power_list[0]["reason"]
         assert briefing.sections["vocabulary"]["word"] == "inchoate"
         messages = db.scalars(select(Message).order_by(Message.created_at, Message.id)).all()
         assert len(messages) == 1

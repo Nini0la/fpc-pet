@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from .assistance import contextual_reply
 from .clock import Clock, SystemClock
+from .commitments import lifecycle_message
 from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .gateway import Gateway
 from .history import SharedHistoryRecallSkill
@@ -51,6 +52,7 @@ class RuntimeEvent:
     window_minutes: int | None = None
     active_thread_id: str | None = None
     allow_memory_write: bool = False
+    scheduled_action_id: str | None = None
 
 
 class IdempotencyConflict(Exception):
@@ -65,7 +67,9 @@ class AgentRuntime:
     """The single entry point for reactive and scheduled events."""
 
     def __init__(
-        self, model: DeterministicModel | None = None, clock: Clock | None = None,
+        self,
+        model: DeterministicModel | None = None,
+        clock: Clock | None = None,
         gateway: Gateway | None = None,
     ) -> None:
         self.extractor = StateExtractor()
@@ -100,6 +104,8 @@ class AgentRuntime:
             if event.active_thread_id is not None or event.allow_memory_write:
                 relevant["active_thread_id"] = event.active_thread_id
                 relevant["allow_memory_write"] = event.allow_memory_write
+            if event.scheduled_action_id is not None:
+                relevant["scheduled_action_id"] = event.scheduled_action_id
         return json.dumps(relevant, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
@@ -141,6 +147,7 @@ class AgentRuntime:
         user_id: str,
         event: RuntimeEvent,
         fingerprint: str,
+        commit: bool = True,
     ) -> dict[str, Any]:
         if hmac.compare_digest(prior.request_fingerprint, fingerprint):
             return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
@@ -159,19 +166,29 @@ class AgentRuntime:
             )
         )
         if event.kind == "user_message":
-            legacy_matches = legacy_matches and event.conversation_id is not None and db.scalar(
-                select(ConversationSession.id).where(
-                    ConversationSession.id == event.conversation_id,
-                    ConversationSession.user_id == user_id,
+            legacy_matches = (
+                legacy_matches
+                and event.conversation_id is not None
+                and db.scalar(
+                    select(ConversationSession.id).where(
+                        ConversationSession.id == event.conversation_id,
+                        ConversationSession.user_id == user_id,
+                    )
                 )
-            ) is not None
+                is not None
+            )
         if not legacy_matches:
             raise IdempotencyConflict("Idempotency key already used for different input")
         prior.request_fingerprint = fingerprint
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return {"idempotent": True, "handled_by": "AgentRuntime.handle"}
 
-    def handle(self, db: Session, user_id: str, event: RuntimeEvent) -> dict[str, Any]:
+    def handle(
+        self, db: Session, user_id: str, event: RuntimeEvent, *, commit: bool = True
+    ) -> dict[str, Any]:
         fingerprint = self._fingerprint(user_id, event)
         prior = db.scalar(
             select(AgentEvent).where(
@@ -179,7 +196,7 @@ class AgentRuntime:
             )
         )
         if prior:
-            return self._idempotent_result(db, prior, user_id, event, fingerprint)
+            return self._idempotent_result(db, prior, user_id, event, fingerprint, commit)
         recorded = AgentEvent(
             user_id=user_id,
             external_id=event.external_id,
@@ -201,7 +218,7 @@ class AgentRuntime:
             )
             if prior is None:
                 raise
-            return self._idempotent_result(db, prior, user_id, event, fingerprint)
+            return self._idempotent_result(db, prior, user_id, event, fingerprint, commit)
         logical_idempotent = False
         reflection_handled = False
         vocabulary_handled = False
@@ -209,7 +226,21 @@ class AgentRuntime:
         vocabulary_reason: str | None = None
         surfaced = 0
         transition_reply: str | None = None
+        autonomy_result: dict[str, Any] = {}
         if event.kind == "user_message" and event.content and event.conversation_id:
+            is_lifecycle = self.gateway is not None and lifecycle_message(event.content)
+            plan_correction = is_lifecycle and any(
+                word in event.content.casefold()
+                for word in (
+                    "deadline",
+                    "unavailable",
+                    "pause",
+                    "cancel",
+                    "resume",
+                    "reopen",
+                    "actually",
+                )
+            )
             user_message = append_message(
                 db,
                 user_id=user_id,
@@ -220,25 +251,25 @@ class AgentRuntime:
                 created_at=self.clock.now(),
             )
             reflection_handled = (
-                self.gateway is None or event.allow_memory_write
-            ) and self.evening.capture_if_pending(
-                db,
-                user_id,
-                recorded.id,
-                user_message.id,
-                event.content,
-                self.clock.now(),
-                self.history.allows_episodic_content(event.content),
+                (self.gateway is None or event.allow_memory_write)
+                and not plan_correction
+                and self.evening.capture_if_pending(
+                    db,
+                    user_id,
+                    recorded.id,
+                    user_message.id,
+                    event.content,
+                    self.clock.now(),
+                    self.history.allows_episodic_content(event.content),
+                )
             )
             if reflection_handled:
                 vocabulary_prompt = self.vocabulary.prompt(
                     db, user_id, recorded.id, self.clock.now(), append=False
                 )
                 if vocabulary_prompt:
-                    vocabulary_reply = (
-                        REFLECTION_ACKNOWLEDGEMENT + " " + vocabulary_prompt
-                    )
-            elif self.gateway is None or event.allow_memory_write:
+                    vocabulary_reply = REFLECTION_ACKNOWLEDGEMENT + " " + vocabulary_prompt
+            elif (self.gateway is None or event.allow_memory_write) and not is_lifecycle:
                 vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
                     db, user_id, recorded.id, event.content, self.clock.now()
                 )
@@ -324,6 +355,7 @@ class AgentRuntime:
                     ),
                     due_at=timing.due_at,
                     due_granularity=timing.due_granularity,
+                    due_bound=timing.bound,
                     due_source_text=timing.source_phrase,
                     estimated_effort_minutes=(
                         None
@@ -363,9 +395,7 @@ class AgentRuntime:
                             Commitment.user_id == user_id,
                             Commitment.deleted.is_(False),
                             Commitment.state.in_(("open", "in_progress", "waiting")),
-                            Commitment.title.icontains(
-                                proposal.title.casefold(), autoescape=True
-                            ),
+                            Commitment.title.icontains(proposal.title.casefold(), autoescape=True),
                         )
                     )
                 )
@@ -426,8 +456,7 @@ class AgentRuntime:
                     item for item in candidates if words & {w.lower() for w in item.title.split()}
                 ]
                 demonstrative_completion = (
-                    proposal.transition == "complete"
-                    and is_demonstrative_completion(event.content)
+                    proposal.transition == "complete" and is_demonstrative_completion(event.content)
                 )
                 if demonstrative_completion:
                     surfaced_candidates = [
@@ -509,8 +538,13 @@ class AgentRuntime:
             assistance_run = None
             if self.gateway is not None and not reflection_handled and not vocabulary_handled:
                 reply, assistance_run = contextual_reply(
-                    db, user_id, recorded.id, user_message.id, event.content,
-                    gateway=self.gateway, now=self.clock.now(),
+                    db,
+                    user_id,
+                    recorded.id,
+                    user_message.id,
+                    event.content,
+                    gateway=self.gateway,
+                    now=self.clock.now(),
                     active_thread_id=event.active_thread_id,
                     allow_write=event.allow_memory_write,
                 )
@@ -564,6 +598,15 @@ class AgentRuntime:
                     f"“{target.due_source_text}” "
                     "is ambiguous in your timezone. Please include an explicit UTC offset."
                 )
+            elif (
+                proposal.kind == "commitment"
+                and isinstance(target, Commitment)
+                and target.ambiguity != "none"
+            ):
+                reply = (
+                    "I saved the intention without guessing a deadline. "
+                    "What exact date and time do you mean?"
+                )
             else:
                 reply = self.model.respond(event.content)
             assistant_message = append_message(
@@ -577,6 +620,18 @@ class AgentRuntime:
             )
             if assistance_run is not None:
                 assistance_run.message_id = assistant_message.id
+        elif event.kind == "autonomy_wake" and event.scheduled_action_id:
+            from .autonomy import perform
+
+            autonomy_result = perform(
+                db,
+                user_id,
+                recorded.id,
+                event.scheduled_action_id,
+                self.clock.now(),
+                self.morning,
+                self.evening,
+            )
         elif event.kind in {"morning_briefing", "morning_trigger"}:
             logical_idempotent = not self.morning.run(
                 db,
@@ -596,9 +651,9 @@ class AgentRuntime:
         elif event.kind == "commitment_check":
             surfaced = self.prospective.run(db, user_id, recorded.id, self.clock.now())
         elif event.kind == "vocabulary_review":
-            logical_idempotent = self.vocabulary.prompt(
-                db, user_id, recorded.id, self.clock.now()
-            ) is None
+            logical_idempotent = (
+                self.vocabulary.prompt(db, user_id, recorded.id, self.clock.now()) is None
+            )
             if logical_idempotent:
                 vocabulary_reason = "no vocabulary review is due"
         db.add(
@@ -606,7 +661,9 @@ class AgentRuntime:
                 user_id=user_id,
                 event_id=recorded.id,
                 skill_name=(
-                    self.vocabulary.name
+                    "autonomy-dispatch"
+                    if event.kind == "autonomy_wake"
+                    else self.vocabulary.name
                     if event.kind == "vocabulary_review" or vocabulary_handled
                     else self.evening.name
                     if event.kind == "evening_reflection" or reflection_handled
@@ -624,14 +681,19 @@ class AgentRuntime:
                     if event.kind == "user_message"
                     else "scheduled-event"
                 ),
-                outcome="duplicate" if logical_idempotent else "handled",
+                outcome=autonomy_result.get("state")
+                or ("duplicate" if logical_idempotent else "handled"),
                 created_at=self.clock.now(),
             )
         )
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         return {
             "idempotent": logical_idempotent,
             "handled_by": "AgentRuntime.handle",
+            **autonomy_result,
             **({"surfaced": surfaced} if event.kind == "commitment_check" else {}),
             **({"reason": vocabulary_reason} if vocabulary_reason else {}),
         }

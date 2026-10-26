@@ -12,6 +12,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     Integer,
     String,
     Text,
@@ -51,6 +52,18 @@ class User(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     context_reset_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    checkins_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    morning_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    evening_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    quiet_start: Mapped[int] = mapped_column(Integer, default=21)
+    quiet_end: Mapped[int] = mapped_column(Integer, default=8)
+    autonomy_version: Mapped[int] = mapped_column(Integer, default=1)
+    autonomy_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    autonomy_heartbeat_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -174,14 +187,31 @@ class Commitment(Owned, Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
+    purpose: Mapped[str] = mapped_column(Text, default="")
+    completion_criteria: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    constraints: Mapped[list] = mapped_column(JSON, default=list)
+    availability: Mapped[dict] = mapped_column(JSON, default=dict)
+    due_bound: Mapped[str] = mapped_column(String(20), default="unspecified")
+    followup_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    followup_minutes: Mapped[int] = mapped_column(Integer, default=1440)
+    max_followups: Mapped[int] = mapped_column(Integer, default=3)
+    followup_count: Mapped[int] = mapped_column(Integer, default=0)
     __table_args__ = (
         CheckConstraint(
             "state in ('open','in_progress','waiting','complete','completed','cancelled',"
-            "'abandoned','dormant')"
+            "'abandoned','dormant','paused')"
         ),
         CheckConstraint("importance between 0 and 3"),
         CheckConstraint("estimated_effort_minutes is null or estimated_effort_minutes >= 0"),
         UniqueConstraint("user_id", "id", name="uq_commitments_user_id_id"),
+        CheckConstraint(
+            "due_bound in ('unspecified','inclusive','exclusive')", name="ck_commitment_bound"
+        ),
+        CheckConstraint(
+            "followup_minutes between 15 and 10080 and max_followups between 0 and 10",
+            name="ck_commitment_followup_policy",
+        ),
     )
 
     def __init__(self, **kwargs):
@@ -280,8 +310,12 @@ class AssistanceRun(Owned, Base):
     message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     related_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     related_commitment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
-    # Store context references and selection metadata, never copies of raw context.
+    # General diagnostics remain metadata-only; raw snapshots use a separate private endpoint.
     context_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    context_trace: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True, deferred=True
+    )
+    trace_status: Mapped[str] = mapped_column(String(40), default="not_recorded")
     policy: Mapped[dict] = mapped_column(JSON, default=dict)
     intervention_type: Mapped[str] = mapped_column(String(40))
     execution_status: Mapped[str] = mapped_column(String(30), default="attempted")
@@ -289,6 +323,7 @@ class AssistanceRun(Owned, Base):
     usage: Mapped[list] = mapped_column(JSON, default=list)
     tool_results: Mapped[list] = mapped_column(JSON, default=list)
     __table_args__ = (
+        Index("ix_assistance_runs_user_message", "user_id", "message_id"),
         UniqueConstraint("user_id", "event_id", name="uq_assistance_runs_user_event"),
         UniqueConstraint("user_id", "id", name="uq_assistance_runs_user_id_id"),
         ForeignKeyConstraint(
@@ -493,4 +528,194 @@ class VocabularyAttempt(Owned, Base):
             ["agent_events.user_id", "agent_events.id"],
             name="fk_vocabulary_attempt_user_event",
         ),
+    )
+
+
+class ChannelAccount(Owned, Base):
+    __tablename__ = "channel_accounts"
+    kind: Mapped[str] = mapped_column(String(30))
+    address: Mapped[str] = mapped_column(String(100))
+    assistant_name: Mapped[str] = mapped_column(String(60))
+    on_behalf_of: Mapped[str] = mapped_column(String(100))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    quiet_start: Mapped[int] = mapped_column(Integer, default=21)
+    quiet_end: Mapped[int] = mapped_column(Integer, default=8)
+    blocked_addresses: Mapped[list] = mapped_column(JSON, default=list)
+    worker_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    __table_args__ = (
+        UniqueConstraint("user_id", "kind", name="uq_channel_user_kind"),
+        UniqueConstraint("kind", "address", name="uq_channel_kind_address"),
+        UniqueConstraint("user_id", "id", name="uq_channel_user_id"),
+        CheckConstraint("quiet_start between 0 and 23 and quiet_end between 0 and 23"),
+    )
+
+
+class Responsibility(Owned, Base):
+    __tablename__ = "responsibilities"
+    commitment_id: Mapped[str] = mapped_column(String(36))
+    channel_id: Mapped[str] = mapped_column(String(36))
+    recipient_name: Mapped[str] = mapped_column(String(100))
+    recipient_address: Mapped[str] = mapped_column(String(100))
+    expected_evidence: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(String(30), default="draft")
+    approved_scope: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    followup_minutes: Mapped[int] = mapped_column(Integer, default=1440)
+    max_followups: Mapped[int] = mapped_column(Integer, default=2)
+    followup_count: Mapped[int] = mapped_column(Integer, default=0)
+    agreement_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reported_complete_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_note: Mapped[str] = mapped_column(Text, default="")
+    last_report: Mapped[str] = mapped_column(Text, default="")
+    attention_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    __table_args__ = (
+        UniqueConstraint("user_id", "id", name="uq_responsibility_user_id"),
+        UniqueConstraint("user_id", "commitment_id", name="uq_responsibility_commitment"),
+        ForeignKeyConstraint(
+            ["user_id", "commitment_id"],
+            ["commitments.user_id", "commitments.id"],
+            name="fk_resp_commitment",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "channel_id"],
+            ["channel_accounts.user_id", "channel_accounts.id"],
+            name="fk_resp_channel",
+        ),
+        CheckConstraint(
+            "state in ('draft','active','completion_reported','verified',"
+            "'escalated','paused','cancelled')",
+            name="ck_responsibility_state",
+        ),
+        CheckConstraint("followup_minutes between 60 and 10080 and max_followups between 0 and 5"),
+        CheckConstraint("followup_count >= 0"),
+        Index("ix_responsibility_due", "state", "next_action_at"),
+    )
+
+
+class ChannelMessage(Owned, Base):
+    __tablename__ = "channel_messages"
+    channel_id: Mapped[str] = mapped_column(String(36))
+    responsibility_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    direction: Mapped[str] = mapped_column(String(10))
+    address: Mapped[str] = mapped_column(String(100))
+    content: Mapped[str] = mapped_column(Text)
+    purpose: Mapped[str] = mapped_column(String(30))
+    state: Mapped[str] = mapped_column(String(30), default="queued")
+    dedupe_key: Mapped[str] = mapped_column(String(160))
+    provider_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    interpretation: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_error: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_channel_message_dedupe"),
+        UniqueConstraint("user_id", "id", name="uq_channel_message_user_id"),
+        ForeignKeyConstraint(
+            ["user_id", "channel_id"],
+            ["channel_accounts.user_id", "channel_accounts.id"],
+            name="fk_message_channel",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "responsibility_id"],
+            ["responsibilities.user_id", "responsibilities.id"],
+            name="fk_message_resp",
+        ),
+        CheckConstraint("direction in ('inbound','outbound')"),
+        CheckConstraint(
+            "state in ('queued','accepted','delivered','read','failed','uncertain',"
+            "'received','cancelled')",
+            name="ck_channel_message_state",
+        ),
+        Index("ix_channel_message_dispatch", "direction", "state", "next_attempt_at"),
+    )
+
+
+class ResponsibilityEvent(Owned, Base):
+    __tablename__ = "responsibility_events"
+    responsibility_id: Mapped[str] = mapped_column(String(36))
+    agent_event_id: Mapped[str] = mapped_column(String(36))
+    kind: Mapped[str] = mapped_column(String(60))
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["user_id", "responsibility_id"],
+            ["responsibilities.user_id", "responsibilities.id"],
+            name="fk_resp_event_resp",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "agent_event_id"],
+            ["agent_events.user_id", "agent_events.id"],
+            name="fk_resp_event_agent",
+        ),
+    )
+
+
+class CommitmentRevision(Owned, Base):
+    __tablename__ = "commitment_revisions"
+    commitment_id: Mapped[str] = mapped_column(String(36))
+    version: Mapped[int] = mapped_column(Integer)
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    source_type: Mapped[str] = mapped_column(String(30))
+    source_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "commitment_id", "version", name="uq_commitment_revision"),
+        ForeignKeyConstraint(
+            ["user_id", "commitment_id"],
+            ["commitments.user_id", "commitments.id"],
+            name="fk_commitment_revision_owner",
+        ),
+    )
+
+
+class ScheduledAction(Owned, Base):
+    __tablename__ = "scheduled_actions"
+    action_key: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(40))
+    commitment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    subject_version: Mapped[int] = mapped_column(Integer)
+    preference_version: Mapped[int] = mapped_column(Integer)
+    local_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    state: Mapped[str] = mapped_column(String(30), default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reason: Mapped[str] = mapped_column(String(80), default="due")
+    decision: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "action_key", name="uq_scheduled_action_key"),
+        CheckConstraint(
+            "state in ('pending','executing','succeeded','retryable',"
+            "'failed','skipped','cancelled')",
+            name="ck_scheduled_action_state",
+        ),
+        CheckConstraint("attempt_count between 0 and 3", name="ck_scheduled_action_attempts"),
+        ForeignKeyConstraint(
+            ["user_id", "commitment_id"],
+            ["commitments.user_id", "commitments.id"],
+            name="fk_scheduled_commitment",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "source_event_id"],
+            ["agent_events.user_id", "agent_events.id"],
+            name="fk_scheduled_event",
+        ),
+        ForeignKeyConstraint(
+            ["user_id", "message_id"],
+            ["messages.user_id", "messages.id"],
+            name="fk_scheduled_message",
+        ),
+        Index("ix_scheduled_due_state", "state", "due_at"),
     )

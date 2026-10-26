@@ -80,10 +80,12 @@ def test_parse_explicit_dates_effort_and_ambiguity_in_user_timezone():
         "Submit report by 10/11", now, "America/Los_Angeles"
     )
 
-    assert friday.due_at == datetime(2026, 10, 3, 6, 59, 59, tzinfo=timezone.utc)
+    assert friday.due_at == datetime(2026, 10, 2, 7, 0, tzinfo=timezone.utc)
+    assert friday.bound == "exclusive"
     assert friday.due_granularity == "date"
     assert friday.source_phrase == "before Friday"
-    assert next_friday.due_at == datetime(2026, 10, 10, 6, 59, 59, tzinfo=timezone.utc)
+    assert next_friday.due_at is None  # "next" may mean this Friday or the following one
+    assert next_friday.ambiguity != "none"
     assert effort.estimated_effort_minutes == 180
     assert iso.due_at == datetime(2026, 10, 2, 22, 30, tzinfo=timezone.utc)
     assert iso.due_granularity == "minute"
@@ -271,7 +273,7 @@ def test_runtime_persists_normalized_date_effort_and_source_phrase():
             RuntimeEvent(
                 "timed",
                 "user_message",
-                "I need to submit the evaluation next Friday; it should take about three hours",
+                "I need to submit the evaluation by Friday; it should take about three hours",
                 conversation_id,
             ),
         )
@@ -280,10 +282,10 @@ def test_runtime_persists_normalized_date_effort_and_source_phrase():
         commitment = db.scalar(select(Commitment))
         assert commitment.title == "submit the evaluation"
         assert commitment.due_at.replace(tzinfo=timezone.utc) == datetime(
-            2026, 10, 10, 6, 59, 59, tzinfo=timezone.utc
+            2026, 10, 3, 6, 59, 59, tzinfo=timezone.utc
         )
         assert commitment.due_granularity == "date"
-        assert commitment.due_source_text == "next Friday"
+        assert commitment.due_source_text == "by Friday"
         assert commitment.estimated_effort_minutes == 180
         assert commitment.effort_minutes == 180  # compatibility during M3 migration
 

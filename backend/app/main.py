@@ -21,7 +21,9 @@ from sqlalchemy.orm import sessionmaker
 
 from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, RuntimeEvent
 from .assistance import snapshot_thread
-from .daily import POLICY_VERSION, local_date_for
+from .autonomy_api import autonomy_router, cancel_for_preferences
+from .clock import FakeClock
+from .daily import POLICY_VERSION, current_power_list, local_date_for
 from .gateway import GatewayError, OpenAICompatibleGateway
 from .models import (
     AgentEvent,
@@ -38,6 +40,8 @@ from .models import (
     ProvenanceLink,
     ReflectionPrompt,
     Reminder,
+    ResponsibilityEvent,
+    ScheduledAction,
     Session,
     Thread,
     ThreadRevision,
@@ -46,6 +50,7 @@ from .models import (
     VocabularyItem,
     utcnow,
 )
+from .operations_api import operations_router
 from .persistence import MutationResult, atomic_update, get_or_create_conversation
 from .prospective import urgency_for
 from .security import resolve_login_username
@@ -88,7 +93,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "X-CSRF-Token"],
 )
-runtime = AgentRuntime(gateway=gateway)
+test_now = os.getenv("MICA_TEST_NOW")
+if test_now and ENV != "test":
+    raise RuntimeError("MICA_TEST_NOW is restricted to isolated test environments")
+runtime = AgentRuntime(
+    gateway=gateway, clock=FakeClock(datetime.fromisoformat(test_now)) if test_now else None
+)
 TODAY_COLLECTION_LIMIT = 50
 SCHEDULE_CATCHUP_DAYS = 1
 RETRYABLE_SQLSTATES = {"40001", "40P01", "55P03"}
@@ -196,10 +206,14 @@ def mutation_guard(
     # Serialize API memory corrections/deletions with generation before reading
     # mutable records. This preserves the runtime's conversation-first lock order.
     conversation = get_or_create_conversation(db, auth.user_id)
-    db.scalar(select(type(conversation)).where(
-        type(conversation).id == conversation.id,
-        type(conversation).user_id == auth.user_id,
-    ).with_for_update())
+    db.scalar(
+        select(type(conversation))
+        .where(
+            type(conversation).id == conversation.id,
+            type(conversation).user_id == auth.user_id,
+        )
+        .with_for_update()
+    )
 
 
 class LoginIn(BaseModel):
@@ -287,6 +301,11 @@ def update_preferences(
     db: DBSession = Depends(db_session),
     user: User = Depends(current_user),
 ):
+    timing_changed = (body.timezone, body.morning_time, body.evening_time) != (
+        user.timezone,
+        user.morning_time,
+        user.evening_time,
+    )
     result = db.execute(
         update(User)
         .where(User.id == user.id, User.version == body.version)
@@ -301,6 +320,9 @@ def update_preferences(
     if getattr(result, "rowcount", 0) != 1:
         db.rollback()
         raise HTTPException(409, "Version conflict")
+    db.refresh(user)
+    if timing_changed:
+        cancel_for_preferences(db, user, runtime.clock.now())
     db.commit()
     db.refresh(user)
     return preference_dict(user)
@@ -462,6 +484,27 @@ def messages(
     page = rows[:limit]
     if mode == "latest":
         page = list(reversed(page))
+    proactive_ids.update(
+        db.scalars(
+            select(ResponsibilityEvent.details["message_id"].as_string()).where(
+                ResponsibilityEvent.user_id == user.id,
+                ResponsibilityEvent.kind == "attention",
+                ResponsibilityEvent.details["message_id"]
+                .as_string()
+                .in_([item.id for item in page]),
+            )
+        ).all()
+    )
+    proactive_ids.update(
+        message_id
+        for message_id in db.scalars(
+            select(ScheduledAction.message_id).where(
+                ScheduledAction.user_id == user.id,
+                ScheduledAction.message_id.in_([item.id for item in page]),
+            )
+        ).all()
+        if message_id is not None
+    )
     has_more = len(rows) > limit
     response.headers["X-Has-More"] = str(has_more).lower()
     next_item = page[0] if mode == "latest" and page else page[-1] if page else None
@@ -489,6 +532,70 @@ def messages(
             "returned_count": len(items),
         }
     return items
+
+
+def owned_assistant_message(db: DBSession, user: User, message_id: str) -> Message:
+    message = db.scalar(
+        select(Message).where(
+            Message.id == message_id,
+            Message.user_id == user.id,
+            Message.role == "assistant",
+        )
+    )
+    if message is None:
+        raise HTTPException(404, "Not found")
+    return message
+
+
+@app.get("/api/chat/messages/{message_id}/context")
+def response_context(
+    message_id: str,
+    response: Response,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    message = owned_assistant_message(db, user, message_id)
+    run = db.scalar(
+        select(AssistanceRun).where(
+            AssistanceRun.user_id == user.id,
+            AssistanceRun.message_id == message.id,
+        )
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Cookie"
+    return {
+        "message_id": message.id,
+        "response": message.content,
+        "created_at": message.created_at,
+        "status": run.trace_status if run else "not_recorded",
+        "trace": run.context_trace if run and run.trace_status == "captured" else None,
+        "run_id": run.id if run else None,
+        "policy": run.policy if run else None,
+        "intervention_type": run.intervention_type if run else None,
+    }
+
+
+@app.delete(
+    "/api/chat/messages/{message_id}/context",
+    status_code=204,
+    dependencies=[Depends(mutation_guard)],
+)
+def clear_response_context(
+    message_id: str,
+    db: DBSession = Depends(db_session),
+    user: User = Depends(current_user),
+):
+    owned_assistant_message(db, user, message_id)
+    db.execute(
+        update(AssistanceRun)
+        .where(
+            AssistanceRun.user_id == user.id,
+            AssistanceRun.message_id == message_id,
+            AssistanceRun.trace_status == "captured",
+        )
+        .values(context_trace=None, trace_status="cleared_by_user")
+    )
+    db.commit()
 
 
 def item_dict(x: Any) -> dict[str, Any]:
@@ -540,19 +647,31 @@ def context_plates(db: DBSession = Depends(db_session), user: User = Depends(cur
             .order_by(Commitment.created_at.desc(), Commitment.id.desc())
             .limit(21)
         ).all()
-        items.append(item_dict(row) | {
-            "ideas": [item_dict(idea) for idea in ideas[:20]],
-            "commitments": [item_dict(item) for item in linked_commitments[:20]],
-            "collection_meta": {
-                "ideas": {"limit": 20, "returned_count": min(len(ideas), 20),
-                          "has_more": len(ideas) > 20},
-                "commitments": {"limit": 20, "returned_count": min(len(linked_commitments), 20),
-                                "has_more": len(linked_commitments) > 20},
-            },
-        })
+        items.append(
+            item_dict(row)
+            | {
+                "ideas": [item_dict(idea) for idea in ideas[:20]],
+                "commitments": [item_dict(item) for item in linked_commitments[:20]],
+                "collection_meta": {
+                    "ideas": {
+                        "limit": 20,
+                        "returned_count": min(len(ideas), 20),
+                        "has_more": len(ideas) > 20,
+                    },
+                    "commitments": {
+                        "limit": 20,
+                        "returned_count": min(len(linked_commitments), 20),
+                        "has_more": len(linked_commitments) > 20,
+                    },
+                },
+            }
+        )
     return {
-        "items": items, "limit": 50, "returned_count": len(items),
-        "total_count": total, "has_more": total > len(items),
+        "items": items,
+        "limit": 50,
+        "returned_count": len(items),
+        "total_count": total,
+        "has_more": total > len(items),
     }
 
 
@@ -576,19 +695,21 @@ def assistance_history(
             .order_by(AssistanceFeedback.created_at.desc(), AssistanceFeedback.id.desc())
             .limit(50)
         ).all()
-        items.append({
-            "id": run.id,
-            "message_id": run.message_id,
-            "intervention_type": run.intervention_type,
-            "execution_status": run.execution_status,
-            "observed_outcome": run.observed_outcome,
-            "context_manifest": run.context_manifest,
-            "policy": run.policy,
-            "usage": run.usage,
-            "tool_results": run.tool_results,
-            "created_at": run.created_at,
-            "feedback": [item_dict(item) for item in feedback],
-        })
+        items.append(
+            {
+                "id": run.id,
+                "message_id": run.message_id,
+                "intervention_type": run.intervention_type,
+                "execution_status": run.execution_status,
+                "observed_outcome": run.observed_outcome,
+                "context_manifest": run.context_manifest,
+                "policy": run.policy,
+                "usage": run.usage,
+                "tool_results": run.tool_results,
+                "created_at": run.created_at,
+                "feedback": [item_dict(item) for item in feedback],
+            }
+        )
     growth = db.scalars(
         select(GrowthEvent)
         .where(GrowthEvent.user_id == user.id)
@@ -596,7 +717,8 @@ def assistance_history(
         .limit(20)
     ).all()
     return {
-        "items": items, "growth": [item_dict(item) for item in growth],
+        "items": items,
+        "growth": [item_dict(item) for item in growth],
         "has_more": len(runs) > limit,
     }
 
@@ -606,9 +728,7 @@ class AssistanceFeedbackIn(BaseModel):
     verdict: Literal["helpful", "unhelpful", "acknowledged", "completed"]
 
 
-@app.post(
-    "/api/assistance/{id}/feedback", status_code=201, dependencies=[Depends(mutation_guard)]
-)
+@app.post("/api/assistance/{id}/feedback", status_code=201, dependencies=[Depends(mutation_guard)])
 def assistance_feedback(
     id: str,
     body: AssistanceFeedbackIn,
@@ -643,7 +763,10 @@ def assistance_feedback(
             response.status_code = 200
             return item_dict(existing)
         feedback = AssistanceFeedback(
-            user_id=user.id, run_id=id, external_id=body.event_id, verdict=body.verdict,
+            user_id=user.id,
+            run_id=id,
+            external_id=body.event_id,
+            verdict=body.verdict,
             created_at=runtime.clock.now(),
         )
         db.add(feedback)
@@ -655,16 +778,18 @@ def assistance_feedback(
             "completed": "user_reported_completed",
         }[body.verdict]
         if body.verdict in {"helpful", "completed"}:
-            db.add(GrowthEvent(
-                user_id=user.id,
-                dimension="judgement" if body.verdict == "helpful" else "human_empowerment",
-                event_type=(
-                    "helpfulness_reported" if body.verdict == "helpful" else "outcome_reported"
-                ),
-                evidence_id=feedback.id,
-                assessment="milestone",
-                created_at=runtime.clock.now(),
-            ))
+            db.add(
+                GrowthEvent(
+                    user_id=user.id,
+                    dimension="judgement" if body.verdict == "helpful" else "human_empowerment",
+                    event_type=(
+                        "helpfulness_reported" if body.verdict == "helpful" else "outcome_reported"
+                    ),
+                    evidence_id=feedback.id,
+                    assessment="milestone",
+                    created_at=runtime.clock.now(),
+                )
+            )
         db.commit()
         db.refresh(feedback)
         return item_dict(feedback)
@@ -796,9 +921,17 @@ def correct_thread(
     if item.version != body.version:
         raise HTTPException(409, "Version conflict")
     if item.kind == "project" and body.kind is not None and body.kind != "project":
-        if db.scalar(select(Thread.id).where(
-            Thread.user_id == user.id, Thread.parent_thread_id == id,
-        ).limit(1)) is not None:
+        if (
+            db.scalar(
+                select(Thread.id)
+                .where(
+                    Thread.user_id == user.id,
+                    Thread.parent_thread_id == id,
+                )
+                .limit(1)
+            )
+            is not None
+        ):
             raise HTTPException(409, "A project with linked children cannot change kind")
     values = {"title": body.title}
     values.update(body.model_dump(exclude={"title", "version"}, exclude_none=True))
@@ -837,8 +970,11 @@ def delete_thread(
             user.id,
             version if version is not None else item.version,
             {
-                "deleted": True, "title": "[deleted]", "description": "",
-                "why": "", "next_action": "",
+                "deleted": True,
+                "title": "[deleted]",
+                "description": "",
+                "why": "",
+                "next_action": "",
             },
         )
     )
@@ -847,10 +983,17 @@ def delete_thread(
         .where(ThreadRevision.user_id == user.id, ThreadRevision.thread_id == id)
         .values(snapshot={})
     )
-    db.add(ProvenanceLink(
-        user_id=user.id, target_id=id, source_type="deletion_tombstone", source_id=None,
-        confidence=1.0, derivation="user-thread-deletion", metadata_only=True,
-    ))
+    db.add(
+        ProvenanceLink(
+            user_id=user.id,
+            target_id=id,
+            source_type="deletion_tombstone",
+            source_id=None,
+            confidence=1.0,
+            derivation="user-thread-deletion",
+            metadata_only=True,
+        )
+    )
     db.commit()
 
 
@@ -920,6 +1063,13 @@ def delete_commitment(
             {
                 "deleted": True,
                 "title": "[deleted]",
+                "purpose": "",
+                "completion_criteria": "",
+                "next_action": "",
+                "constraints": [],
+                "availability": {},
+                "followup_enabled": False,
+                "due_source_text": None,
                 "last_touched_at": runtime.clock.now(),
             },
         )
@@ -1131,12 +1281,19 @@ def delete_journal(
 
 def invalidate_journal_episodes(db: DBSession, user_id: str, journal_id: str) -> None:
     derived = select(ProvenanceLink.target_id).where(
-        ProvenanceLink.user_id == user_id, ProvenanceLink.source_type == "journal_entry",
+        ProvenanceLink.user_id == user_id,
+        ProvenanceLink.source_type == "journal_entry",
         ProvenanceLink.source_id == journal_id,
     )
-    db.execute(update(Episode).where(Episode.user_id == user_id, Episode.id.in_(derived)).values(
-        summary="[source corrected or deleted]", deleted=True, version=Episode.version + 1,
-    ))
+    db.execute(
+        update(Episode)
+        .where(Episode.user_id == user_id, Episode.id.in_(derived))
+        .values(
+            summary="[source corrected or deleted]",
+            deleted=True,
+            version=Episode.version + 1,
+        )
+    )
 
 
 @app.get("/api/history/recall")
@@ -1193,7 +1350,7 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             .where(
                 Commitment.user_id == user.id,
                 Commitment.deleted.is_(False),
-                Commitment.state == "open",
+                Commitment.state.in_(("open", "in_progress", "waiting")),
             )
         )
         or 0
@@ -1203,7 +1360,7 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
         .where(
             Commitment.user_id == user.id,
             Commitment.deleted.is_(False),
-            Commitment.state == "open",
+            Commitment.state.in_(("open", "in_progress", "waiting")),
         )
         .order_by(Commitment.created_at, Commitment.id)
         .limit(TODAY_COLLECTION_LIMIT)
@@ -1264,9 +1421,28 @@ def today(db: DBSession = Depends(db_session), user: User = Depends(current_user
             }
     return {
         "local_date": local_date,
+        "timezone": user.timezone,
         "briefing": item_dict(briefing) if briefing else None,
+        "briefing_stale": bool(
+            briefing
+            and any(
+                (
+                    item.last_touched_at.replace(tzinfo=runtime.clock.now().tzinfo)
+                    if item.last_touched_at.tzinfo is None
+                    else item.last_touched_at
+                )
+                > (
+                    briefing.created_at.replace(tzinfo=runtime.clock.now().tzinfo)
+                    if briefing.created_at.tzinfo is None
+                    else briefing.created_at
+                )
+                for item in open_items
+            )
+        ),
         "vocabulary": vocabulary_section,
-        "power_list": briefing.power_list if briefing else [],
+        "power_list": current_power_list(open_items, active_threads, user, runtime.clock.now())
+        if briefing
+        else [],
         "open_commitments": [commitment_dict(item) for item in open_items],
         "active_threads": [item_dict(item) for item in active_threads],
         "collection_meta": {
@@ -1702,3 +1878,7 @@ def scheduled(
         raise HTTPException(409, str(error)) from error
     except OperationalError as error:
         raise_retryable_database_conflict(db, error)
+
+
+app.include_router(operations_router(db_session, current_user, mutation_guard, runtime))
+app.include_router(autonomy_router(db_session, current_user, mutation_guard, runtime))

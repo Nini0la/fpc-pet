@@ -1,5 +1,9 @@
 # Adaptive Assistance Slice
 
+**Operational extension:** delegated responsibilities now have their own durable follow-through
+worker and isolated Baileys adapter. See [OPERATIONS.md](OPERATIONS.md). The original slice's
+no-scheduler statements below describe its earlier scope, not the new delegated workflow.
+
 **Provider update:** Azure OpenAI GPT-5.4 is now connected and live-verified with synthetic
 project/idea capture, cross-session recall, correction and feedback flows. Configuration and
 observed usage are in [AZURE_OPENAI.md](AZURE_OPENAI.md). Statements below about unavailable

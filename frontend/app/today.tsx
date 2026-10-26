@@ -1,6 +1,8 @@
 "use client";
 import {useState} from "react";
 import {api,ApiError} from "./api";
+import Responsibilities from "./responsibilities";
+import Autonomy from "./autonomy";
 export type PowerItem={id:string;title:string;reason:string;kind:string;score:number};
 export type Urgency={score:number;bucket:"low"|"medium"|"high";factors:{deadline_hours:number|null;effort_minutes:number|null;slack_hours:number|null;importance:number;inactivity_days:number;blocked_dependencies:number;availability_minutes:number|null}};
 export type TodayData={local_date:string;briefing:{content:string;local_date:string}|null;vocabulary:{word:string;definition:string;example:string;mode:"new"|"review"|"rest";reason:string;mastery_state:string;next_review_at:string|null}|null;power_list:PowerItem[];open_commitments:{id:string;title:string;deadline_hint?:string|null;urgency?:Urgency}[];active_threads?:{id:string;title:string}[];resurfaced_items:{id:string;title:string}[];evening_reflection:{status:"not_started"|"awaiting"|"completed";journal:unknown|null}};
@@ -11,6 +13,8 @@ export default function Today({data,onSessionExpired=()=>undefined,onRefresh=asy
   const hasBriefing=Boolean(data.briefing);
   return <section className="view" aria-labelledby="today-heading"><header className="view-header"><div><span className="eyebrow">{data.local_date}</span><h1 id="today-heading">Today</h1><p>A calm view of what deserves your attention.</p></div>{!hasBriefing&&<button disabled={busy} onClick={()=>trigger("morning_briefing")}>Prepare briefing</button>}</header>
     <p aria-live="polite" className="status">{feedback}</p>
+    <Responsibilities onExpired={onSessionExpired}/>
+    <Autonomy onExpired={onSessionExpired} onRefresh={onRefresh}/>
     {data.briefing&&<article className="briefing card"><span className="badge">Briefing</span><p>{data.briefing.content}</p></article>}
     {data.power_list.length>0&&<section className="today-section"><div className="section-title"><h2>Power List</h2><span>{data.power_list.length} priorities</span></div><ol className="card-list power-list">{data.power_list.map((item,index)=><li className="card" key={item.id}><span className="rank">{index+1}</span><div><h3>{item.title}</h3><p>{item.reason}</p></div></li>)}</ol></section>}
     {data.open_commitments.length>0&&<section className="today-section"><div className="section-title"><h2>Open commitments</h2><span>Bounded to what is current</span></div><ul className="card-list">{data.open_commitments.map(item=><li className="card commitment" key={item.id}><div><h3>{item.title}</h3>{item.deadline_hint&&<p>{item.deadline_hint}</p>}</div>{item.urgency&&<div className={`urgency ${item.urgency.bucket}`}><strong>{`${item.urgency.bucket} urgency — score ${item.urgency.score}`}</strong>{item.urgency.factors.slack_hours!==null&&item.urgency.factors.effort_minutes!==null&&<span>{`${item.urgency.factors.slack_hours}h slack · ${item.urgency.factors.effort_minutes} min effort`}</span>}</div>}</li>)}</ul></section>}

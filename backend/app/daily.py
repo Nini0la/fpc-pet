@@ -25,6 +25,8 @@ class Candidate:
     deadline_hint: str | None
     priority: int
     created_at: datetime
+    urgency_score: int | None = None
+    last_touched_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,9 @@ def rank_power_list(
     for candidate in candidates:
         score = 0
         reasons: list[str] = []
+        if candidate.urgency_score is not None:
+            score += candidate.urgency_score
+            reasons.append(f"current urgency {candidate.urgency_score}/100")
         lower = candidate.title.lower()
         if candidate.deadline_hint:
             score += 40
@@ -68,7 +73,9 @@ def rank_power_list(
         if any(word in lower for word in ("important", "critical", "priority", "urgent")):
             score += 25
             reasons.append("explicit importance")
-        age_days = max(0, (now.date() - candidate.created_at.date()).days)
+        age_days = max(
+            0, (now.date() - (candidate.last_touched_at or candidate.created_at).date()).days
+        )
         if age_days:
             points = min(age_days, 15)
             score += points
@@ -88,6 +95,38 @@ def rank_power_list(
             )
         )
     return sorted(ranked, key=lambda item: (-item.score, item.title.casefold(), item.id))[:3]
+
+
+def deadline_label(item, timezone_name: str) -> str:
+    from .commitments import utc
+
+    if item.due_at:
+        local = utc(item.due_at).astimezone(ZoneInfo(timezone_name))
+        relation = "before" if item.due_bound == "exclusive" else "by"
+        return f"{relation} {local.isoformat()}"
+    return "needs clarification" if item.ambiguity != "none" else ""
+
+
+def current_power_list(commitments, threads, user, now, unfinished_ids=None):
+    from .prospective import urgency_for
+
+    candidates = [
+        Candidate(
+            item.id,
+            "commitment",
+            item.title,
+            deadline_label(item, user.timezone) or None,
+            item.priority,
+            item.created_at,
+            urgency_for(item, now).score,
+            item.last_touched_at,
+        )
+        for item in commitments
+    ] + [
+        Candidate(item.id, "thread", item.title, None, item.priority, item.created_at)
+        for item in threads
+    ]
+    return [item.__dict__ for item in rank_power_list(candidates, now, unfinished_ids)]
 
 
 class MorningBriefingSkill:
@@ -142,36 +181,26 @@ class MorningBriefingSkill:
 
         commitments = list(
             db.scalars(
-                select(Commitment).where(
+                select(Commitment)
+                .where(
                     Commitment.user_id == user_id,
                     Commitment.deleted.is_(False),
-                    Commitment.state == "open",
-                ).order_by(Commitment.created_at, Commitment.id)
+                    Commitment.state.in_(("open", "in_progress", "waiting")),
+                )
+                .order_by(Commitment.created_at, Commitment.id)
             )
         )
         threads = list(
             db.scalars(
-                select(Thread).where(
+                select(Thread)
+                .where(
                     Thread.user_id == user_id,
                     Thread.deleted.is_(False),
                     Thread.state == "active",
-                ).order_by(Thread.created_at, Thread.id)
+                )
+                .order_by(Thread.created_at, Thread.id)
             )
         )
-        candidates = [
-            Candidate(
-                item.id,
-                "commitment",
-                item.title,
-                item.deadline_hint,
-                item.priority,
-                item.created_at,
-            )
-            for item in commitments
-        ] + [
-            Candidate(item.id, "thread", item.title, None, item.priority, item.created_at)
-            for item in threads
-        ]
         yesterday = db.scalar(
             select(JournalEntry).where(
                 JournalEntry.user_id == user_id,
@@ -183,9 +212,7 @@ class MorningBriefingSkill:
         )
         open_ids = {item.id for item in commitments}
         unfinished_ids &= open_ids
-        power_list = [
-            item.__dict__ for item in rank_power_list(candidates, now, unfinished_ids)
-        ]
+        power_list = current_power_list(commitments, threads, user, now, unfinished_ids)
         sections: dict[str, Any] = {}
         from .vocabulary import VocabularyLearningSkill
 
@@ -197,7 +224,11 @@ class MorningBriefingSkill:
         collection_meta: dict[str, dict[str, int | bool]] = {}
         if commitments:
             sections["open_commitments"] = [
-                {"id": item.id, "title": item.title, "deadline": item.deadline_hint or ""}
+                {
+                    "id": item.id,
+                    "title": item.title,
+                    "deadline": deadline_label(item, user.timezone),
+                }
                 for item in commitments[:BRIEFING_SECTION_LIMIT]
             ]
             collection_meta["open_commitments"] = {
@@ -214,8 +245,7 @@ class MorningBriefingSkill:
             ][:BRIEFING_SECTION_LIMIT]
         if threads:
             sections["active_threads"] = [
-                {"id": item.id, "title": item.title}
-                for item in threads[:BRIEFING_SECTION_LIMIT]
+                {"id": item.id, "title": item.title} for item in threads[:BRIEFING_SECTION_LIMIT]
             ]
             collection_meta["active_threads"] = {
                 "limit": BRIEFING_SECTION_LIMIT,
@@ -254,9 +284,7 @@ class MorningBriefingSkill:
                     f"Due vocabulary review: {vocabulary['word']} ({vocabulary['reason']})."
                 )
         if commitments:
-            lines.append(
-                "Open commitments: " + "; ".join(item.title for item in commitments[:5])
-            )
+            lines.append("Open commitments: " + "; ".join(item.title for item in commitments[:5]))
         if unfinished_ids:
             lines.append(
                 "Unfinished yesterday: "
@@ -442,7 +470,8 @@ class EveningReflectionSkill:
         value = re.sub(r"[^\w\s'-]", " ", value)
         value = re.sub(r"\s+", " ", value).strip()
         value = re.sub(r"^(?:to\s+)?(?:finish|complete)\s+", "", value)
-        return re.sub(r"^(?:the|a|an)\s+", "", value).strip()
+        value = re.sub(r"^(?:prepare|preparing)\s+", "", value)
+        return re.sub(r"^(?:the|a|an|my)\s+", "", value).strip()
 
     @classmethod
     def _matching_item(cls, items, phrase: str):
@@ -470,12 +499,14 @@ class EveningReflectionSkill:
         now: datetime,
         allow_episode: bool,
     ) -> bool:
+        from .commitments import invalidate_and_replan, revision
         from .models import (
             Commitment,
             Episode,
             JournalEntry,
             ProvenanceLink,
             ReflectionPrompt,
+            Responsibility,
             Thread,
             User,
         )
@@ -510,14 +541,18 @@ class EveningReflectionSkill:
         commitments = list(
             db.scalars(
                 select(Commitment).where(
-                    Commitment.user_id == user_id, Commitment.deleted.is_(False)
+                    Commitment.user_id == user_id,
+                    Commitment.deleted.is_(False),
+                    Commitment.id.not_in(
+                        select(Responsibility.commitment_id).where(
+                            Responsibility.user_id == user_id
+                        )
+                    ),
                 )
             )
         )
         threads = list(
-            db.scalars(
-                select(Thread).where(Thread.user_id == user_id, Thread.deleted.is_(False))
-            )
+            db.scalars(select(Thread).where(Thread.user_id == user_id, Thread.deleted.is_(False)))
         )
         state: dict[str, list] = {
             "completed_ids": [],
@@ -535,6 +570,13 @@ class EveningReflectionSkill:
             if item.strip()
         ]
         prior_subject = None
+        touched: dict[str, Commitment] = {}
+
+        def before_change(item):
+            if isinstance(item, Commitment):
+                revision(db, item, "before_reflection", message_id)
+                touched[item.id] = item
+
         for clause in clauses:
             lower = clause.casefold().replace("’", "'")
             mentioned = self._mentioned_items([*commitments, *threads], clause)
@@ -546,22 +588,23 @@ class EveningReflectionSkill:
             if unfinished:
                 item = self._matching_item(commitments, unfinished.group(1))
                 if item is not None:
+                    before_change(item)
                     item.last_touched_at = now
                     item.version += 1
                     state["unfinished_ids"].append(item.id)
                     supported.append(f"unfinished: {item.title}")
                 prior_subject = mentioned[0] if len(mentioned) == 1 else None
                 continue
-            completed = re.match(r"^i\s+(?:finished|completed)\s+(.+)$", lower)
+            completed = re.match(r"^i(?:'ve| have)?\s+(?:finished|completed)\s+(.+)$", lower)
             if completed:
                 phrase = completed.group(1)
                 item = (
                     prior_subject
-                    if self._normalized_subject(phrase) == "it"
-                    and prior_subject in commitments
+                    if self._normalized_subject(phrase) == "it" and prior_subject in commitments
                     else self._matching_item(commitments, phrase)
                 )
                 if item is not None:
+                    before_change(item)
                     item.state = "complete"
                     item.completed_at = now
                     item.last_touched_at = now
@@ -574,6 +617,7 @@ class EveningReflectionSkill:
             if priority_match:
                 item = self._matching_item([*commitments, *threads], priority_match.group(1))
                 if item is not None:
+                    before_change(item)
                     item.priority = 3
                     if isinstance(item, Commitment):
                         item.last_touched_at = now
@@ -590,10 +634,18 @@ class EveningReflectionSkill:
                 if deadline_match:
                     deadline = deadline_match.group(1).strip()
                     title = title[: deadline_match.start()].strip()
+                from .prospective import parse_commitment_timing
+
+                timing = parse_commitment_timing(clause, now, user.timezone)
                 item = Commitment(
                     user_id=user_id,
                     title=title,
                     deadline_hint=deadline,
+                    due_at=timing.due_at,
+                    due_source_text=timing.source_phrase,
+                    due_granularity=timing.due_granularity,
+                    ambiguity=timing.ambiguity,
+                    due_bound=timing.bound if timing.due_at else "unspecified",
                     confidence=1.0,
                     derivation="evening-reflection-v1",
                     created_at=now,
@@ -601,6 +653,7 @@ class EveningReflectionSkill:
                 db.add(item)
                 db.flush()
                 commitments.append(item)
+                revision(db, item, "reflection", message_id)
                 state["new_commitment_ids"].append(item.id)
                 supported.append(f"new commitment: {title}")
                 prior_subject = item
@@ -634,6 +687,12 @@ class EveningReflectionSkill:
                 supported.append(f"outcome: {outcome.group(1).strip()}")
             prior_subject = mentioned[0] if len(mentioned) == 1 else None
 
+        for item in touched.values():
+            item.followup_count = 0
+            invalidate_and_replan(db, item, now)
+            revision(db, item, "reflection", message_id)
+        if touched:
+            user.context_reset_at = now
         summary = "; ".join(supported) if supported else None
         journal = JournalEntry(
             user_id=user_id,

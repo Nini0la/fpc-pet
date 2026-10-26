@@ -1,5 +1,30 @@
 # Security and privacy
 
+## Operational Communications
+
+Drafting a responsibility does not authorize contact. A separate session/CSRF-protected action
+binds approval to the exact displayed scope and version; workers recheck scope, state, recipient,
+sender identity, opt-outs, deadlines and quiet hours. External replies cannot authorize tools or
+expand the contact plan. Reported completion is not owner-verified completion.
+
+The Baileys bridge has a separate bearer-authenticated service boundary and private persistent
+session storage. It checks the paired number against the configured assistant number and the
+sender address supplied by the authorized core. Pairing data and credentials are not logged.
+Uncertain sends stop for review rather than being blindly replayed. Communication transcripts,
+approval snapshots and external evidence are retained as operational records, separate from
+derived-memory deletion; comprehensive communications erasure is not implemented yet.
+See [OPERATIONS.md](OPERATIONS.md) for setup and failure/recovery limits.
+
+## Private Response Context Inspection
+
+New contextual responses retain exact model-input snapshots for the owning user's inspector.
+These raw inputs are stored separately from metadata-only diagnostics and are not exported to
+an external observability service or used as memory retrieval sources. Transport credentials
+are excluded; personal text supplied to the model is retained. The dedicated endpoint is
+tenant-scoped and non-cacheable. Users can clear individual snapshots. Deleting retained memory
+conservatively clears all raw snapshots for that account; corrections preserve historical
+snapshots. See [RESPONSE_CONTEXT.md](RESPONSE_CONTEXT.md) for the full retention boundaries.
+
 ## Contextual Slice Amendment
 
 The live gateway adds an external data boundary: bounded relevant personal context and the

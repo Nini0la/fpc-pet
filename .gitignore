@@ -7,3 +7,7 @@
 **/*.tsbuildinfo
 .env
 *.db
+*.db-wal
+*.db-shm
+whatsapp-bridge/state/
+.local/

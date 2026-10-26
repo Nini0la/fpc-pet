@@ -94,7 +94,7 @@ def test_0009_preserves_legacy_data_defaults_and_tenant_constraints(postgres_url
             inspector = inspect(engine)
             assert new_tables <= set(inspector.get_table_names())
             with engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0009"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
                 for name, expected in seeded.items():
                     table = legacy.tables[name]
                     actual = connection.execute(select(table).where(
@@ -269,8 +269,10 @@ def test_api_correction_waits_for_generation_before_reading_memory(
                 content, tool_calls = "", [native_call]
             elif len(calls) == 2:
                 assert tools == []
-                assert json.loads(messages[-1]["content"].split("\n", 1)[1]) == [
-                    {"tool": "retrieve_context", "status": "read"},
+                receipts = json.loads(messages[-1]["content"].split("\n", 1)[1])
+                context = json.loads(messages[1]["content"].split("\n", 1)[1])
+                assert receipts == [
+                    {"tool": "retrieve_context", "status": "read", "context": context},
                 ]
                 content, tool_calls = obsolete, []
             else:

@@ -9,7 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import ConversationSession, Message, User, utcnow
+from .models import AssistanceRun, Commitment, ConversationSession, Message, User, utcnow
 
 
 class MutationResult(Enum):
@@ -95,6 +95,21 @@ def atomic_update(
     values: dict[str, Any],
 ) -> MutationResult:
     """Tenant-scoped compare-and-swap for mutable owned records."""
+    if model is Commitment:
+        from .commitments import revision
+
+        before = db.scalar(
+            select(Commitment)
+            .where(
+                Commitment.id == record_id,
+                Commitment.user_id == user_id,
+                Commitment.deleted.is_(False),
+                Commitment.version == expected_version,
+            )
+            .with_for_update()
+        )
+        if before is not None and not values.get("deleted"):
+            revision(db, before, "before_change", None)
     result = cast(
         CursorResult[Any],
         db.execute(
@@ -107,13 +122,37 @@ def atomic_update(
             )
             .values(**values, version=expected_version + 1)
             .execution_options(synchronize_session=False)
-        )
+        ),
     )
     if result.rowcount == 1:
         # Old chat may repeat corrected or deleted memory. Only later messages may
         # enter subsequent model context; the visible transcript stays unchanged.
-        db.execute(update(User).where(User.id == user_id).values(context_reset_at=utcnow()))
+        db.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(context_reset_at=values.get("last_touched_at") or utcnow())
+        )
+        if values.get("deleted") is True:
+            # Raw prompts can contain source chat as well as derived records; purge all
+            # of this tenant's snapshots rather than risk incomplete dependency matching.
+            db.execute(
+                update(AssistanceRun)
+                .where(
+                    AssistanceRun.user_id == user_id,
+                    AssistanceRun.trace_status == "captured",
+                )
+                .values(context_trace=None, trace_status="cleared_by_memory_deletion")
+            )
         db.expire_all()
+        if model is Commitment:
+            from .commitments import invalidate_and_replan
+
+            current = db.get(Commitment, record_id)
+            if current is not None:
+                invalidate_and_replan(db, current, values.get("last_touched_at") or utcnow())
+                db.flush()
+                if not current.deleted:
+                    revision(db, current, "state_update", None)
         return MutationResult.UPDATED
     exists = db.scalar(
         select(model.id).where(

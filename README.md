@@ -1,5 +1,17 @@
 # Mystery Pet on Continuity
 
+## Operational Responsibilities
+
+The `feat/operational-responsibilities` work adds delegated outcomes, reviewed contact plans,
+durable scheduling/outbox processing, a separate Baileys WhatsApp service, reply interpretation,
+and owner verification. Open **Today → Delegated responsibilities**. See
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for setup and reliability boundaries.
+Live WhatsApp pairing has been verified against the dedicated assistant number. The real
+recipient send/reply acceptance test remains pending; automated transport tests use an
+explicitly simulated WhatsApp socket. General WhatsApp chat is not implemented yet.
+
+## Contextual Companion
+
 The next slice adds contextual conversation to the existing Continuity foundation:
 
 - A named, persistent SVG companion in Chat, with calm/curious/playful expression.
@@ -12,13 +24,19 @@ The next slice adds contextual conversation to the existing Continuity foundatio
   that prevents old transcripts from immediately reintroducing corrected/deleted information.
 - Explicit assistance feedback, one deterministic adaptation rule, and evidence-backed milestones.
 - Token/cost/latency diagnostics and a six-scenario offline/live comparative evaluation harness.
+- Response-level context inspection in History and Chat: actual model requests, instructions,
+  retrieved records and tool results, with private snapshot clearing controls.
+
+See [Response context inspection](docs/RESPONSE_CONTEXT.md) for the captured data and retention
+behavior. Older responses without captures are labeled honestly; snapshots begin with new turns.
 
 **Azure OpenAI is now live-verified** using a GPT-5.4 deployment: actual project/idea tools,
 fresh-session recall, corrected-memory use, and feedback adaptation were exercised with
 synthetic data. Automated regression tests still use scripted responses or a loopback server.
 See [Azure configuration](docs/AZURE_OPENAI.md).
 `MODEL_MODE=deterministic` preserves the existing development/test behavior and is clearly labeled
-in the UI. No automatic scheduler, public registration, or claimed improvement in intelligence is added.
+in the UI. Delegated follow-through uses the separate operations worker; public registration and
+claims of improved intelligence remain outside the implemented scope.
 
 See [the slice review and walkthrough](docs/MYSTERY_PET_SLICE.md) for the reconciliation,
 trade-offs, permission/retention boundaries, validation commands, and remaining gaps.
@@ -71,7 +89,7 @@ M1–M3 continuity behavior remains available:
 3. `cd backend && uv sync --extra dev && set -a && source ../.env && set +a && uv run alembic upgrade head && uv run uvicorn app.main:app --reload`
 4. `cd frontend && npm ci && npm run dev`
 
-Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through `0009`.
+Alembic uses `DATABASE_URL` when set and supports explicit upgrade/downgrade through `0011`.
 If unset, `backend/alembic.ini` retains the local Compose PostgreSQL URL as a development
 fallback. Migration URLs are never logged.
 
@@ -84,7 +102,7 @@ Azure GPT-5.4 has been live-verified; Nebius/Nemotron has not.
 The deterministic adapter remains development/test-only and is rejected in production.
 
 Always run `uv run alembic upgrade head` before starting an existing database; the new head is
-`0009`. Migration conservatively excludes pre-upgrade chat from model context while retaining
+`0011`. Migration `0009` conservatively excludes pre-upgrade chat from model context while retaining
 the visible transcript and current structured records.
 
 ## Verify

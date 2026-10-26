@@ -319,10 +319,10 @@ class OpenAICompatibleGateway:
             cost_usd=reply.cost_usd,
         )
 
-    def _complete(
+    def request_payload(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
-    ) -> ModelReply:
-        """Direct transport for the isolated worker; callers must use complete."""
+    ) -> dict[str, Any]:
+        """The exact JSON body sent to the provider, with no transport credentials."""
         try:
             if (
                 not isinstance(messages, list)
@@ -347,7 +347,20 @@ class OpenAICompatibleGateway:
             elif self.provider == "azure_openai":
                 # Azure rejects tool_choice, including "none", without a tools list.
                 payload.pop("tool_choice")
-            data = json.dumps(payload, allow_nan=False).encode("utf-8")
+            # Validate and detach the snapshot from mutable caller-owned messages.
+            result: dict[str, Any] = json.loads(json.dumps(payload, allow_nan=False))
+            return result
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            raise GatewayError("invalid_request") from None
+
+    def _complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> ModelReply:
+        """Direct transport for the isolated worker; callers must use complete."""
+        try:
+            data = json.dumps(
+                self.request_payload(messages, tools), allow_nan=False
+            ).encode("utf-8")
             url = self.base_url.rstrip("/") + "/chat/completions"
             auth = {"Authorization": f"Bearer {self.api_key}"}
             if self.provider == "azure_openai":

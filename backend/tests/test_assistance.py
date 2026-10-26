@@ -199,7 +199,9 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
     assert final_call["messages"][-1]["role"] == "user"
     prefix, receipts = final_call["messages"][-1]["content"].split("\n", 1)
     assert prefix == "Server action receipts (data):"
-    assert json.loads(receipts) == [{"tool": "retrieve_context", "status": "read"}]
+    assert json.loads(receipts) == [
+        {"tool": "retrieve_context", "status": "read", "context": context},
+    ]
     assert all("tool_calls" not in message for message in final_call["messages"])
     run = latest_run(client)
     assert run["execution_status"] == "delivered"
@@ -399,6 +401,7 @@ def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
     assert len(run["usage"]) == 1
     if scenario.startswith("permission_"):
         assert [schema["function"]["name"] for schema in gateway.calls[0]["tools"]] == [
+            "get_commitments",
             "retrieve_context",
         ]
         assert run["policy"]["allow_memory_write"] is False
