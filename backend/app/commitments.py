@@ -65,6 +65,9 @@ def lifecycle_message(text: str) -> bool:
     return bool(
         re.search(
             r"\bdeadline.*(?:moved|changed|now)|\bunavailable\b|"
+            r"\bavailability\b|\bavailable (?:again|now)\b|"
+            r"\b(?:update|change|revise|clear)\b.*"
+            r"\b(?:plan|next action|blocked periods|follow-ups|check-ins|constraints|blocker)\b|"
             r"\bi(?:'ve| have)? (?:finished|completed)\b|\bdone with\b|"
             r"(?:^|[.!?]\s*)(?:please )?(?:pause|cancel|resume|reopen)\b",
             value,

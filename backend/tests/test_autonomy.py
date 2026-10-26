@@ -224,6 +224,38 @@ def test_s1_s2_s3_s9_conversation_fresh_session_unattended_correction_completion
     assert cancelled["state"] == "cancelled" and cancelled["next_check_at"] is None
 
 
+def test_availability_correction_bypasses_pending_evening_reflection(pg_client, monkeypatch):
+    main, gateway, item = capture(pg_client, monkeypatch)
+    response = pg_client.post(
+        "/api/events/scheduled",
+        headers=csrf(pg_client),
+        json={
+            "event_id": "pending-evening",
+            "kind": "evening_reflection",
+        },
+    )
+    assert response.status_code == 202
+    gateway.scripts.extend(
+        [
+            reply("", tool("update_commitment", {"id": item["id"], "blocked_periods": []})),
+            reply("The availability restriction is cleared."),
+        ]
+    )
+    send(
+        pg_client,
+        "availability-restored",
+        f"For {item['title']}, evenings are available again. Clear the blocked periods.",
+        allow_memory_write=True,
+    )
+    updated = pg_client.get("/api/autonomy").json()["commitments"][0]
+    assert updated["version"] == item["version"] + 1
+    assert updated["availability"]["blocked_periods"] == []
+    with main.SessionLocal() as db:
+        prompt = db.scalar(select(ReflectionPrompt))
+        assert prompt.status == "awaiting" and prompt.journal_entry_id is None
+    assert not gateway.scripts
+
+
 def seed(sessions, **settings):
     with sessions.begin() as db:
         user = User(username="owner", timezone="Africa/Lagos", checkins_enabled=True, **settings)
