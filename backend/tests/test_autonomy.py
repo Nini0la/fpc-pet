@@ -486,6 +486,72 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
     assert all(
         row["state"] == "open" for row in pg_client.get("/api/autonomy").json()["commitments"]
     )
+    # A model can provide ID/version alone when the owner names the full title.
+    # Another open commitment must not make that explicit reference ambiguous.
+    gateway.scripts.extend(
+        [
+            reply(
+                "",
+                tool(
+                    "update_commitment",
+                    {
+                        "id": item["id"],
+                        "version": item["version"],
+                        "deadline_text": "Thursday at 6pm",
+                    },
+                ),
+            ),
+            reply("Updated the named presentation deadline."),
+        ]
+    )
+    send(
+        pg_client,
+        "named-correction",
+        f"For {item['title']}, the deadline moved to Thursday at 6pm.",
+        allow_memory_write=True,
+    )
+    current = pg_client.get("/api/autonomy").json()["commitments"]
+    changed = next(row for row in current if row["id"] == item["id"])
+    assert changed["due_local"] == "2026-10-29T18:00:00+01:00"
+    assert next(row for row in current if row["id"] != item["id"])["due_at"] is None
+    gateway.scripts.append(
+        reply(
+            "",
+            tool(
+                "update_commitment",
+                {
+                    "id": item["id"],
+                    "deadline_text": "Friday at 6pm",
+                },
+            ),
+        )
+    )
+    answer = send(
+        pg_client, "unnamed-correction", "The deadline is Friday at 6pm.", allow_memory_write=True
+    )
+    assert "ambiguous_reference" in answer["content"]
+    with main.SessionLocal.begin() as db:
+        owner = db.scalar(select(User))
+        db.add(Commitment(user_id=owner.id, title=item["title"], confidence=1, derivation="test"))
+    gateway.scripts.append(
+        reply(
+            "",
+            tool(
+                "update_commitment",
+                {
+                    "id": item["id"],
+                    "deadline_text": "Friday at 6pm",
+                },
+            ),
+        )
+    )
+    answer = send(
+        pg_client,
+        "duplicate-title",
+        f"For {item['title']}, move it to Friday at 6pm.",
+        allow_memory_write=True,
+    )
+    assert "ambiguous_reference" in answer["content"]
     assert (
         pg_client.post(
             f"/api/commitments/{item['id']}/lifecycle",

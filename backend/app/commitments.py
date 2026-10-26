@@ -426,6 +426,15 @@ def resolve(
     if trusted and args.id:
         return db.scalar(query.where(Commitment.id == args.id))
     reference = normalized(args.reference or "")
+    if not reference and args.id:
+        # Models often supply a current record ID without repeating its reference.
+        # Accept that only when the owner actually names its full title this turn;
+        # retain the uniqueness check below so duplicate titles still disambiguate.
+        named = db.scalar(query.where(Commitment.id == args.id))
+        if named and re.search(
+            r"(?<!\w)" + re.escape(normalized(named.title)) + r"(?!\w)", normalized(text)
+        ):
+            reference = normalized(named.title)
     if reference and reference not in normalized(text):
         return None
     if reference and args.id == reference:
