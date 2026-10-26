@@ -29,6 +29,7 @@ from .models import (
     VocabularyItem,
 )
 from .persistence import MutationResult, append_message, atomic_update
+from .personality import REFLECTION_ACKNOWLEDGEMENT
 from .prospective import ProspectiveReminderSkill, parse_commitment_timing
 from .runtime import (
     DeterministicModel,
@@ -235,7 +236,7 @@ class AgentRuntime:
                 )
                 if vocabulary_prompt:
                     vocabulary_reply = (
-                        "Thanks — I’ve carried that into tomorrow. " + vocabulary_prompt
+                        REFLECTION_ACKNOWLEDGEMENT + " " + vocabulary_prompt
                     )
             elif self.gateway is None or event.allow_memory_write:
                 vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
@@ -518,7 +519,7 @@ class AgentRuntime:
             elif vocabulary_reply:
                 reply = vocabulary_reply
             elif reflection_handled:
-                reply = "Thanks — I’ve carried that into tomorrow."
+                reply = REFLECTION_ACKNOWLEDGEMENT
             elif recalling_history:
                 reply = self.history.answer(
                     db,

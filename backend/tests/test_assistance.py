@@ -301,11 +301,10 @@ def test_explicit_unhelpful_feedback_clarifies_without_model_and_unrelated_is_un
     before = len(gateway.calls)
     answer = send(client, "clarify", active_thread_id=project["id"])
     assert len(gateway.calls) == before
-    assert answer["content"] == (
-        "You marked my previous approach to this as unhelpful. I won't repeat it. "
-        "Would practical help with a blocker, a smaller next step, or leaving it for now "
-        "be more useful? I don't know what caused the lack of progress."
-    )
+    assert "won't keep pushing" in answer["content"]
+    assert "leave it for now" in answer["content"]
+    # Feedback alone does not establish inactivity.
+    assert "lack of progress" not in answer["content"]
     run = latest_run(client)
     assert run["intervention_type"] == "clarify_support"
     assert run["policy"]["reason"] == "explicit_unhelpful_feedback"
@@ -667,7 +666,7 @@ def test_pending_reflection_respects_gateway_write_permission(
             assert journal.structured_state["completed_ids"] == [existing_id]
             assert len(journal.structured_state["new_commitment_ids"]) == 1
             assert len(journal.structured_state["new_thread_ids"]) == 1
-            assert "carried that into tomorrow" in answer["content"]
+            assert "saved your reflection" in answer["content"]
         else:
             assert journal is None
             assert prompt.status == "awaiting"

@@ -426,7 +426,7 @@ def test_evening_reflection_finishes_naturally_then_asks_active_recall_in_same_c
         )
     with factory() as db:
         messages = db.scalars(select(Message).order_by(Message.ordinal)).all()
-        assert messages[-1].content.startswith("Thanks — I’ve carried that into tomorrow.")
+        assert "saved your reflection" in messages[-1].content
         assert "what does “inchoate” mean?" in messages[-1].content
         assert len({message.conversation_id for message in messages}) == 1
 

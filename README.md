@@ -23,6 +23,14 @@ in the UI. No automatic scheduler, public registration, or claimed improvement i
 See [the slice review and walkthrough](docs/MYSTERY_PET_SLICE.md) for the reconciliation,
 trade-offs, permission/retention boundaries, validation commands, and remaining gaps.
 
+## Conversational Personality
+
+This branch adds an explicit warm, innocent, curious and lightly playful conversational voice, with
+the existing calm/curious/playful presets acting as accents rather than repeated introductions.
+Persona configuration is in `backend/app/personality.py`; operational rules and tool permissions
+remain separate. See [docs/PERSONALITY.md](docs/PERSONALITY.md) for the synthetic conversational
+evaluation, observed limitations, and carrying this change into the operational branch.
+
 ## Preserved Continuity Foundation
 
 A narrow personal-AI prototype that carries explicit commitments, threads, shared episodes, and a daily morning/evening loop forward through time. This repository intentionally does **not** reproduce or claim compatibility with proprietary FPC architecture.
