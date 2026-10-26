@@ -37,9 +37,9 @@ backend, frontend and migration. Stop the old API/workers, take the normal datab
 run from the committed release's `backend/` using the existing private configuration:
 
 ```sh
-uv run --env-file ../.env alembic upgrade head
+uv run --env-file /Users/niniola/Projects/fpc-pet/.env alembic upgrade head
 # Start the API with the existing service manager/configuration.
-uv run --env-file ../.env python -m app.scheduler --personal-only
+uv run --env-file /Users/niniola/Projects/fpc-pet/.env python -m app.scheduler --personal-only
 ```
 
 Keep this worker supervised alongside the API. It wakes every 10 seconds, persists a heartbeat,
@@ -86,7 +86,7 @@ commitment for narrower control. Stop the personal worker to disable all unatten
 Keep migration `0012` when disabling: it retains correction/execution evidence.
 
 If a schema rollback is necessary, stop the new API/workers and back up first. From `backend/`,
-`uv run --env-file ../.env alembic downgrade 0011` drops the new action/revision tables and autonomy
+`uv run --env-file /Users/niniola/Projects/fpc-pet/.env alembic downgrade 0011` drops the new action/revision tables and autonomy
 fields, preserving original commitments and converting `paused` to legacy `waiting`. That loses
 autonomy-specific evidence/settings; restore the backup if those are needed. Re-upgrading defaults
 all opt-ins to off. Run the matching old application only after the schema rollback.
