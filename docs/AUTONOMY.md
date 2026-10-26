@@ -30,10 +30,11 @@ separate scope-review and completion-verification controls.
 
 ## Authorized rollout
 
-The implementation is verified in an isolated stack. The existing personal database/services were
-not upgraded by this work. Rollout requires the owner's authorization and a coordinated deployment
-of this branch's backend, frontend and migration. Stop the old API/workers, take the normal database
-backup, then run from `backend/` using the existing private configuration:
+The owner-authorized personal rollout is recorded in [PERSONAL_ROLLOUT.md](PERSONAL_ROLLOUT.md),
+including its deployed revision, restore-tested backups, supervised services and exact recovery
+steps. Owner acceptance is still pending. For subsequent authorized deployments, coordinate the
+backend, frontend and migration. Stop the old API/workers, take the normal database backup, then
+run from the committed release's `backend/` using the existing private configuration:
 
 ```sh
 uv run --env-file ../.env alembic upgrade head
@@ -43,7 +44,8 @@ uv run --env-file ../.env python -m app.scheduler --personal-only
 
 Keep this worker supervised alongside the API. It wakes every 10 seconds, persists a heartbeat,
 and never polls an LLM for routine scheduling. `--once --personal-only` runs one normal-clock sweep.
-The existing responsibility worker can continue to own approved external-channel workflows.
+The current personal rollout keeps the bridge/responsibility worker stopped and channel accounts
+disabled until the owner explicitly authorizes a live delivery test.
 Running the scheduler without `--personal-only` also invokes that existing worker when a channel
 is configured; the documented personal deployment uses `--personal-only`.
 

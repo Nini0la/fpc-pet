@@ -1,6 +1,60 @@
 # Implementation Status
 
-## Milestone 01 — Functional Autonomy: ISOLATED STACK VERIFIED, OWNER ACCEPTANCE PENDING
+## Milestone 01 — PERSONAL STACK DEPLOYED AND VERIFIED; OWNER ACCEPTANCE PENDING
+
+**Current deployment:** `acaa10c379ff00e151068a12635ac81438718c4b` on
+`feat/functional-autonomy`, pushed with initial implementation `8b7ed1c` and rollout fix `a750646`.
+All commits are single-parent feature commits; no branch merge was performed. Full deployment,
+backup hashes and exact previous-version restoration steps: [PERSONAL_ROLLOUT.md](PERSONAL_ROLLOUT.md).
+
+Owner authorized the controlled personal rollout on 2026-10-26. The matching API, Next production
+build and `app.scheduler --personal-only` now run from `.local/releases/m1-final/` under macOS
+LaunchAgent supervision, on loopback ports 8000/3000. Personal PostgreSQL `mystery_pet` is at
+**0012 (head)**. This supersedes the pre-rollout pending-deployment notes retained below.
+
+### Personal-stack acceptance evidence
+
+| Requirement | Observed result |
+| --- | --- |
+| Backup / usable recovery | Custom dump restored to `mica_recovery_20261026`; 100 original rows matched; real-data upgrade/downgrade rehearsal passed; previous `cef953f` API served original owner chat/commitment/profile/history |
+| Preserve existing data/settings | All original content fingerprints preserved after migration and after validation; original companion name/temperament, timezone and routine times preserved |
+| S1/S2 live conversation | One labelled validation commitment; correct exclusive deadline; ordinary correction to Thursday 18:00 UTC; Azure completion receipt at version 5 with no next check |
+| S3 true unattended effect | One persisted in-app check-in with API/frontend stopped; actual scheduled real-clock worker effect at 17:24:59 UTC |
+| S4 real crash / replay | Actual `SIGKILL` after committed claim; no effect before crash; expired lease recovered on attempt 2; two further worker sweeps produced no duplicate |
+| S5 changed circumstances | Evening restriction preserved purpose and replanned to next morning; explicit later availability restoration reset the check safely |
+| S6 routines | One unattended morning and one evening output; duplicate occurrences skipped; original 11:58/20:00 UTC times restored |
+| S7 external boundary | Bridge/responsibility worker stopped; both channel accounts disabled; blank channel overrides in services; zero channel messages |
+| S8/S9 integrated runtime/UI | Matching clean release; real mobile Chromium owner login, historical chat, History, controls, correction/action evidence, no page errors/overflow; verified again after recovery |
+
+Final application verification: **526 backend tests passed in 95.62s**, Ruff and mypy passed;
+**65 frontend / 12 bridge tests** passed; final production build passed. GitHub CI for `acaa10c`
+passed: https://github.com/Nini0la/fpc-pet/actions/runs/40365221852.
+
+Live action `5a19e625-a581-4588-9532-90039e241855` recovered to exactly one message
+`8c8e3c84-0732-40bc-b0ae-7e7dc40f3a97`, source event `0f866522-f108-4554-b7d9-e5756f83e564`.
+Validation commitment `0172a1ab-dc0d-4600-85ab-09a927924ccd` is completed, with five revisions.
+Pre-rollout and post-verification database dumps, private config/bridge backup and detailed
+evidence remain under ignored, restricted `.local/rollouts/20261026-m1/`.
+
+### Findings during the controlled rollout
+
+- Fixed an ID-only proposal being rejected despite the owner explicitly naming its full title
+  when another commitment exists (`a750646`). Multi-commitment positive, unnamed-reference negative
+  and duplicate-title negative regression cases pass.
+- Fixed positive availability/plan corrections being consumed by an awaiting evening reflection
+  (`acaa10c`). The exact pending-reflection regression passes; live plan restoration succeeded.
+- Two Azure final wording calls returned `unavailable` after successful tool writes. Their receipts
+  and persisted state stayed honest; creation was not retried or duplicated. Later conversational
+  changes and completion delivered successfully. Provider final-response availability remains a
+  known runtime limitation, not evidence that a saved write failed.
+
+**Remaining gate:** the owner's real-world trial and approval. Check-ins and both routines are
+enabled for that trial; original commitments retain default-off individual follow-ups. Today’s
+routine outputs already exist from verification, so normal-time recurrence resumes tomorrow.
+Keep the Mac awake/logged in for unattended work. WhatsApp delivery stays disabled. No Milestone 2
+work or branch merge is authorized before owner acceptance.
+
+## Isolated-stack verification — pre-rollout record
 
 Governing documents: `MICA_TARGET.md` and `milestones/01_AUTONOMY.md`, read in full and copied
 byte-for-byte from the supplied ZIP. No Milestone 2/3 implementation is authorized by this work.
