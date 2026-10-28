@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .assistance import contextual_reply
 from .clock import Clock, SystemClock
-from .commitments import lifecycle_message
+from .commitments import explicit_followup, lifecycle_message
 from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .gateway import Gateway
 from .history import SharedHistoryRecallSkill
@@ -228,26 +229,40 @@ class AgentRuntime:
         transition_reply: str | None = None
         autonomy_result: dict[str, Any] = {}
         if event.kind == "user_message" and event.content and event.conversation_id:
-            is_lifecycle = self.gateway is not None and lifecycle_message(event.content)
-            plan_correction = is_lifecycle and any(
-                word in event.content.casefold()
-                for word in (
-                    "deadline",
-                    "unavailable",
-                    "available",
-                    "availability",
-                    "plan",
-                    "next action",
-                    "blocked periods",
-                    "follow-ups",
-                    "check-ins",
-                    "constraints",
-                    "blocker",
-                    "pause",
-                    "cancel",
-                    "resume",
-                    "reopen",
-                    "actually",
+            conversation_request = self.gateway is not None and (
+                explicit_followup(event.content)
+                or event.content.rstrip().endswith("?")
+                or bool(
+                    re.fullmatch(
+                        r"(?:hi|hello|hey)(?:[ ,]+[\w'-]+)?[!.]*", event.content.strip(), re.I
+                    )
+                )
+            )
+            is_lifecycle = self.gateway is not None and (
+                lifecycle_message(event.content) or conversation_request
+            )
+            plan_correction = conversation_request or (
+                is_lifecycle
+                and any(
+                    word in event.content.casefold()
+                    for word in (
+                        "deadline",
+                        "unavailable",
+                        "available",
+                        "availability",
+                        "plan",
+                        "next action",
+                        "blocked periods",
+                        "follow-ups",
+                        "check-ins",
+                        "constraints",
+                        "blocker",
+                        "pause",
+                        "cancel",
+                        "resume",
+                        "reopen",
+                        "actually",
+                    )
                 )
             )
             user_message = append_message(

@@ -13,6 +13,8 @@ from test_postgres_quality import postgres_url as postgres_url
 from app.agent import AgentRuntime
 from app.clock import FakeClock
 from app.models import (
+    JournalEntry,
+    ReflectionPrompt,
     TelegramBot,
     TelegramConnection,
     TelegramDelivery,
@@ -318,3 +320,46 @@ def test_unicode_splitting_retains_content_and_bounds_telegram_units():
     parts = list(chunks(content))
     assert "".join(parts) == content
     assert all(len(part.encode("utf-16-le")) // 2 <= 3500 for part in parts)
+
+
+@pytest.mark.parametrize("content", ["Hello Mica", "What should I do next?"])
+def test_freeform_dm_not_consumed_by_pending_reflection(pg_client, setup, content):
+    main, gateway, transport = setup
+    connect(pg_client, setup)
+    assert (
+        pg_client.post(
+            "/api/events/scheduled",
+            headers=csrf(pg_client),
+            json={
+                "event_id": "pending-reflection",
+                "kind": "evening_reflection",
+            },
+        ).status_code
+        == 202
+    )
+    gateway.scripts.append(reply("Hello! What would you like to work on?"))
+    cycle(main.SessionLocal, main.runtime, transport, BOT, [update(2, content)])
+    assert len(gateway.calls) == 1
+    with main.SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(JournalEntry)) == 0
+        assert db.scalar(select(ReflectionPrompt)).status == "awaiting"
+
+
+def test_tracking_request_bypasses_pending_reflection(pg_client, setup):
+    main, _, _ = setup
+    assert (
+        pg_client.post(
+            "/api/events/scheduled",
+            headers=csrf(pg_client),
+            json={
+                "event_id": "pending-reflection",
+                "kind": "evening_reflection",
+            },
+        ).status_code
+        == 202
+    )
+    item, _ = create_via_telegram(pg_client, setup)
+    assert item["next_check_at"] and item["followup_enabled"]
+    with main.SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(JournalEntry)) == 0
+        assert db.scalar(select(ReflectionPrompt)).status == "awaiting"
