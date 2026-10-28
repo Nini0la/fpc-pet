@@ -20,3 +20,8 @@ uv export --frozen --no-dev --no-emit-project --no-hashes --format requirements-
 
 Keep `TELEGRAM_BOT_TOKEN`, database URLs, Azure keys and runtime/window JSON files outside Git.
 The deployment image copies only application code and locked requirements, never `.env` or backups.
+
+The active trial and exact expiry/recovery instructions are recorded in `docs/MODAL_TRIAL.md`.
+Changing a Modal Secret does not necessarily restart warm containers: the identical deployment
+may be skipped. For a deliberate window activation, stop/redeploy only `mica-owner-trial`, then
+verify `inspect_runtime` reports the intended active window. Do not reset the window for routine fixes.

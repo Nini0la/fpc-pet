@@ -1,11 +1,31 @@
 # Implementation Status
 
-## Authorized 46-hour Modal trial — preparation in progress
+## Authorized 46-hour Modal trial — ACTIVE, laptop-independent operation verified
+
+**Deployed revision:** `8b8bb7b`. **Window:** 2026-10-28 11:54:34 UTC through
+2026-10-30 09:54:34 UTC. Modal app `mica-owner-trial`, current ID `ap-1yObYNST6QMQ207oajaSga`.
+Full evidence, controls, costs and recovery: [MODAL_TRIAL.md](MODAL_TRIAL.md).
+
+- All **227 pre-cutover records** restored to Neon with exact original-field fingerprints.
+  Hosted PostgreSQL is now authoritative; the frozen local DB and a custom dump are retained.
+- Local background workers are stopped and disabled. Optional local API/frontend now use Neon,
+  but Telegram/scheduling remain available with the Mac off. No public web/multi-user access was added.
+- Actual cloud-generated morning briefing at **11:58:14 UTC**, accepted by Telegram as message **22**,
+  while all local application services were stopped. Subsequent real owner DM/Azure reply succeeded
+  at **12:08:49 UTC**; ongoing conversations also succeeded.
+- Explicit cloud worker-container termination recovered automatically with persisted state/link/cursor.
+  Post-restart status showed 9 accepted Telegram deliveries and no failed/uncertain delivery state.
+- Automatic app shutdown tested independently; runtime model/send guards enforce the exact 46-hour
+  cutoff. Shutdown leaves Neon data intact. WhatsApp remains disabled; the branch is unmerged.
+- **545 backend tests**, lint/type checks and deployed-revision GitHub CI passed:
+  https://github.com/Nini0la/fpc-pet/actions/runs/40682756247.
+
+### Preparation record
 
 The owner approved CPU-only Modal hosting plus hosted PostgreSQL so Telegram/autonomy can operate
 with the Mac off for 46 hours. Existing Modal workspace authentication is available; the owner
 provided a new direct SSL Neon connection in the ignored `.env`. Connectivity passed and the target
-public schema was confirmed empty. No hosted data migration has happened at this checkpoint.
+public schema was confirmed empty before the migration described above.
 
 - Added a bounded, timezone-aware 46-hour authorization window, plus model/send guards after expiry.
   `deploy/modal_trial.py` reuses the current scheduler and Telegram runtime in one capped CPU worker
@@ -18,8 +38,8 @@ public schema was confirmed empty. No hosted data migration has happened at this
 - Requirements are exported from the existing lockfile. Guards fail closed on disabled, malformed,
   naive-time, premature or expired windows and reject durations longer than 46 hours.
 - Verification: **545 backend tests passed in 90.53s**, Ruff and mypy passed (34 app modules).
-  Cloud image, restored-data integrity, real cloud Azure/Telegram access and the final cutover still
-  need integrated verification before the laptop can be turned off.
+  Cloud image, restored-data integrity, real cloud Azure/Telegram access, cutover and restart were
+  subsequently verified as recorded above.
 
 ## Telegram owner-trial extension — deployed, linked and live DM replies verified
 

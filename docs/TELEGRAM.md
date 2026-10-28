@@ -1,5 +1,10 @@
 # Telegram — private Milestone 1 owner trial
 
+**Current hosting:** Telegram and scheduling have moved to Modal with authoritative PostgreSQL on
+Neon for the authorized 46-hour trial, ending **2026-10-30 09:54:34 UTC**. The Mac may be off during
+that window; the optional web dashboard remains local. See [MODAL_TRIAL.md](MODAL_TRIAL.md).
+The local-hosting instructions below describe the retained fallback configuration.
+
 This is an owner-authorized messaging extension to the existing Mica runtime, not a multi-user
 release or a new agent. Discord is still unimplemented. WhatsApp delivery stays disabled.
 
