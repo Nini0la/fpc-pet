@@ -1,5 +1,26 @@
 # Implementation Status
 
+## Authorized 46-hour Modal trial — preparation in progress
+
+The owner approved CPU-only Modal hosting plus hosted PostgreSQL so Telegram/autonomy can operate
+with the Mac off for 46 hours. Existing Modal workspace authentication is available; the owner
+provided a new direct SSL Neon connection in the ignored `.env`. Connectivity passed and the target
+public schema was confirmed empty. No hosted data migration has happened at this checkpoint.
+
+- Added a bounded, timezone-aware 46-hour authorization window, plus model/send guards after expiry.
+  `deploy/modal_trial.py` reuses the current scheduler and Telegram runtime in one capped CPU worker
+  with a separate expiry function. No public web endpoint or multi-user access is added.
+- Expiry was tested on a disposable Modal app: it successfully stopped itself using the CLI and
+  container identity. The first probe lacked CLI dependencies; installing the pinned Modal SDK
+  resolved that. Probe app `ap-SNHPsvStC1DlG6paKzqR1l` is stopped; unrelated workspace apps were untouched.
+- Runtime/credential and trial-window Secrets are separate. The expiry function receives only the
+  window, not database/Azure/Telegram credentials. No workspace-wide budget or plan was changed.
+- Requirements are exported from the existing lockfile. Guards fail closed on disabled, malformed,
+  naive-time, premature or expired windows and reject durations longer than 46 hours.
+- Verification: **545 backend tests passed in 90.53s**, Ruff and mypy passed (34 app modules).
+  Cloud image, restored-data integrity, real cloud Azure/Telegram access and the final cutover still
+  need integrated verification before the laptop can be turned off.
+
 ## Telegram owner-trial extension — deployed, linked and live DM replies verified
 
 The owner explicitly requested Telegram access for the Milestone 1 trial. This remains owner-only;
