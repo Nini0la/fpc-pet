@@ -54,6 +54,7 @@ from .operations_api import operations_router
 from .persistence import MutationResult, atomic_update, get_or_create_conversation
 from .prospective import urgency_for
 from .security import resolve_login_username
+from .telegram_api import telegram_router
 
 ENV = os.getenv("APP_ENV", "production")
 MODEL_MODE = os.getenv("MODEL_MODE", "deterministic" if ENV in {"development", "test"} else "")
@@ -1882,3 +1883,4 @@ def scheduled(
 
 app.include_router(operations_router(db_session, current_user, mutation_guard, runtime))
 app.include_router(autonomy_router(db_session, current_user, mutation_guard, runtime))
+app.include_router(telegram_router(db_session, current_user, mutation_guard, runtime))

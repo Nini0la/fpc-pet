@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -718,4 +719,80 @@ class ScheduledAction(Owned, Base):
             name="fk_scheduled_message",
         ),
         Index("ix_scheduled_due_state", "state", "due_at"),
+    )
+
+
+class TelegramBot(Base):
+    __tablename__ = "telegram_bots"
+    id: Mapped[str] = mapped_column(String(30), primary_key=True)
+    username: Mapped[str] = mapped_column(String(100))
+    next_update_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramConnection(Owned, Base):
+    __tablename__ = "telegram_connections"
+    bot_id: Mapped[str] = mapped_column(ForeignKey("telegram_bots.id"))
+    peer_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    linked: Mapped[bool] = mapped_column(Boolean, default=False)
+    generation: Mapped[int] = mapped_column(Integer, default=1)
+    code_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    allow_memory_write: Mapped[bool] = mapped_column(Boolean, default=False)
+    proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    proactive_since: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_telegram_owner"),
+        UniqueConstraint("bot_id", "peer_id", name="uq_telegram_peer"),
+        UniqueConstraint("user_id", "id", name="uq_telegram_connection_owner"),
+    )
+
+
+class TelegramInput(Owned, Base):
+    __tablename__ = "telegram_inputs"
+    connection_id: Mapped[str] = mapped_column(String(36))
+    update_id: Mapped[int] = mapped_column(BigInteger)
+    generation: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    allow_memory_write: Mapped[bool] = mapped_column(Boolean, default=False)
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    __table_args__ = (
+        UniqueConstraint("connection_id", "update_id", name="uq_telegram_update"),
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["telegram_connections.user_id", "telegram_connections.id"],
+        ),
+        CheckConstraint("state in ('pending','processing','succeeded','failed','skipped')"),
+        CheckConstraint("attempts between 0 and 3"),
+    )
+
+
+class TelegramDelivery(Owned, Base):
+    __tablename__ = "telegram_deliveries"
+    connection_id: Mapped[str] = mapped_column(String(36))
+    generation: Mapped[int] = mapped_column(Integer)
+    peer_id: Mapped[str] = mapped_column(String(30))
+    dedupe_key: Mapped[str] = mapped_column(String(180))
+    content: Mapped[str] = mapped_column(Text)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action_id: Mapped[str | None] = mapped_column(ForeignKey("scheduled_actions.id"), nullable=True)
+    state: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    reason: Mapped[str] = mapped_column(String(80), default="queued")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_telegram_delivery"),
+        ForeignKeyConstraint(
+            ["user_id", "connection_id"],
+            ["telegram_connections.user_id", "telegram_connections.id"],
+        ),
+        ForeignKeyConstraint(["user_id", "message_id"], ["messages.user_id", "messages.id"]),
+        CheckConstraint(
+            "state in ('pending','sending','sent','retryable','uncertain','cancelled','failed')"
+        ),
+        CheckConstraint("attempts between 0 and 3"),
+        Index("ix_telegram_delivery_pending", "state", "retry_at"),
     )

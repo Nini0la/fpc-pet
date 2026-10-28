@@ -94,7 +94,7 @@ def test_0009_preserves_legacy_data_defaults_and_tenant_constraints(postgres_url
             inspector = inspect(engine)
             assert new_tables <= set(inspector.get_table_names())
             with engine.connect() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0012"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0013"
                 for name, expected in seeded.items():
                     table = legacy.tables[name]
                     actual = connection.execute(select(table).where(

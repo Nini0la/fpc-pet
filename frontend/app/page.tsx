@@ -1,5 +1,5 @@
 "use client";
-import {FormEvent,useEffect,useRef,useState} from "react";
+import {FormEvent,useEffect,useEffectEvent,useRef,useState} from "react";
 import {api,ApiError} from "./api";
 import Chat,{type ChatPage,type Message} from "./chat";
 import Today,{type TodayData} from "./today";
@@ -23,6 +23,8 @@ export default function Page(){
   const refreshVersion=useRef({threads:0,history:0});
   async function refreshMessages(){const page=await api<ChatPage>("/api/chat/messages?mode=latest&limit=100");setMessages(page.items);setChatPage(page)}
   async function refreshToday(){setToday(await api<TodayData>("/api/today"));await refreshMessages()}
+  const refreshVisible=useEffectEvent(async()=>{try{if(view==="chat")await refreshMessages();else if(view==="today")await refreshToday();}catch(cause){if(cause instanceof ApiError&&cause.status===401)expire();}});
+  useEffect(()=>{if(!authenticated)return;const timer=setInterval(()=>{if(document.visibilityState==="visible")void refreshVisible();},10000);return()=>clearInterval(timer);},[authenticated]);
   async function load(){setLoading(true);setError("");setViewErrors({});try{const history=await api<ChatPage>("/api/chat/messages?mode=latest&limit=100");const [todayData,vocabularyData,prefs]=await Promise.all([api<TodayData>("/api/today"),api<{items:VocabularyHistoryItem[]}>("/api/vocabulary?limit=20&offset=0"),api<Preferences>("/api/preferences")]);setMessages(history.items);setChatPage(history);setToday(todayData);setVocabulary(vocabularyData.items);setPreferences(prefs);setAuthenticated(true);setLoading(false);await Promise.allSettled([reloadThreads(),reloadHistory()]);}catch(cause){setLoading(false);if(cause instanceof ApiError&&cause.status===401){setAuthenticated(false);return;}setAuthenticated(false);setError("We could not load your preferences safely. Retry before continuing.");}}
   useEffect(()=>{
     // The initial request is the external synchronization performed by this effect.

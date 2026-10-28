@@ -1,5 +1,29 @@
 # Implementation Status
 
+## Telegram owner-trial extension — implementation verified, deployment pending
+
+The owner explicitly requested Telegram access for the Milestone 1 trial. This remains owner-only;
+no multi-user rollout, Discord adapter, WhatsApp send authorization or Milestone 2 work is included.
+See [TELEGRAM.md](TELEGRAM.md) for linking, permissions, the short test checklist and rollback.
+
+- Added `0013` with empty bot/link/inbox/outbox tables; original records are untouched.
+- `app/telegram.py` reuses AgentRuntime and PostgreSQL transactions, with single-use linking,
+  per-connection write/proactive grants, input deduplication, bounded retry, saved reply delivery,
+  stale-action suppression and uncertain-send handling. `telegram_worker.py` uses a per-bot
+  PostgreSQL advisory lock and outbound long polling. Tokens never enter safe error messages.
+- Today → Telegram provides linking, permission/revocation controls and delivery evidence.
+  Visible web Chat/Today now refresh to show external conversation updates.
+- Real Telegram `getMe` succeeded for **@QwenErringBot**; no webhook was configured. No bot token
+  was displayed or committed. No live DM was sent before owner linking.
+- PostgreSQL/fake-transport acceptance: shared chat/tool writes, unattended forwarding, duplicate
+  updates, private-only/owner-only linking, expiration/replacement/replay of codes, write-permission
+  boundaries, completion/revocation/stop cancellation, quiet hours/stale checks, uncertain sends,
+  explicit rate-limit retry and concurrent-worker exclusion all passed.
+- Full regressions: **540 backend tests passed in 97.55s**, Ruff/mypy passed (33 app modules).
+  **67 frontend tests passed**, with lint/type checks. Migration upgrade/downgrade preserves old
+  records and personality settings. These automated Telegram deliveries use a fake transport;
+  real account linking and DM conversation remain a separate live verification step.
+
 ## Milestone 01 — PERSONAL STACK DEPLOYED AND VERIFIED; OWNER ACCEPTANCE PENDING
 
 **Current deployment:** `acaa10c379ff00e151068a12635ac81438718c4b` on
