@@ -1,6 +1,6 @@
 # Implementation Status
 
-## Telegram owner-trial extension — implementation verified, deployment pending
+## Telegram owner-trial extension — deployed, linked and live DM replies verified
 
 The owner explicitly requested Telegram access for the Milestone 1 trial. This remains owner-only;
 no multi-user rollout, Discord adapter, WhatsApp send authorization or Milestone 2 work is included.
@@ -22,7 +22,53 @@ See [TELEGRAM.md](TELEGRAM.md) for linking, permissions, the short test checklis
 - Full regressions: **540 backend tests passed in 97.55s**, Ruff/mypy passed (33 app modules).
   **67 frontend tests passed**, with lint/type checks. Migration upgrade/downgrade preserves old
   records and personality settings. These automated Telegram deliveries use a fake transport;
-  real account linking and DM conversation remain a separate live verification step.
+  separate live account-linking and DM results are recorded below.
+
+### Personal deployment — 2026-10-28
+
+- Initial Telegram revision `81a1aeb`, followed by routing fix **`b2cf3c9`**, committed/pushed on
+  `feat/functional-autonomy` and deployed from the clean `.local/releases/telegram-owner-final/`
+  checkout. This supersedes the `acaa10c` runtime
+  described in the earlier rollout record below; Milestone 1 owner acceptance is still pending.
+- Personal DB is at **0013**. Its pre-upgrade custom dump was restored to `mica_telegram_recovery`;
+  `0012 → 0013 → 0012` preserved all **207 original rows**. The actual upgrade also preserved every
+  original row/field. Post-startup comparison ignores only the normal autonomy heartbeat timestamp.
+- Backup/config artifacts: restricted, ignored `.local/rollouts/telegram-owner-trial/`.
+  `mystery_pet-0012.dump` SHA-256:
+  `4596b5a1d746150ee3d60e08348c7074c33c9ee18bb42c966e50e05a972756a0`.
+- Matching API/frontend/personal worker are supervised alongside **`com.mica.telegram`**.
+  Real long polling is active for @QwenErringBot, with a recent persisted heartbeat and no worker
+  errors observed. The owner completed authenticated linking and granted memory/proactive delivery
+  permissions. No other Telegram user is trusted. WhatsApp accounts remain disabled.
+- Real mobile Chromium against the deployed app passed owner login, Telegram panel/bot identity,
+  recent heartbeat, default-off permissions, enabled invitation control and no horizontal overflow
+  or page errors. The browser check did not create or consume a linking code on the owner's behalf.
+- Final production build passed. GitHub CI for the deployed revision passed:
+  https://github.com/Nini0la/fpc-pet/actions/runs/40672129160.
+- Rollback: stop the Telegram worker, point the other LaunchAgents back to the retained
+  `.local/releases/m1-final/` (`acaa10c`) and restart them; the additive Telegram tables can remain
+  to preserve evidence. See `TELEGRAM.md` for optional schema downgrade and the linking/test guide.
+
+### Live linking and final routing check
+
+- The owner linked their private Telegram account through the one-use invitation. Both memory
+  updates and proactive Telegram delivery are explicitly enabled. The link survives worker/API
+  restart and remains visible with its permissions in the web app.
+- Real Telegram transport evidence: **two incoming messages processed successfully**, **two Azure
+  contextual-assistance turns delivered**, and **four bot deliveries accepted by Telegram**
+  (including connection/command acknowledgements). No failed/uncertain deliveries were present at
+  verification. Real check-in arrival on Telegram remains part of the owner's leisure trial;
+  automated scheduled forwarding, quiet-hour/cancellation and retry tests use fake transport.
+- Fixed a shared-runtime edge case where a pending daily prompt could consume a greeting, question
+  or explicit tracking request. These now reach normal contextual assistance. Three added regressions
+  verify that the pending reflection stays awaiting and no spurious journal is created.
+- Final regressions: **543 backend tests passed in 115.97s**, Ruff/mypy passed; **67 frontend tests**
+  and the production build passed. Real mobile browser verification after the final restart confirms
+  the linked account, granted permissions, worker heartbeat and valid layout.
+- The owner asked about a possible 46-hour Modal deployment. Only pricing was researched; no Modal
+  or hosted-PostgreSQL deployment was performed. The current service still depends on the Mac being
+  awake and logged in. Cloud deployment would require moving the authoritative database as well as
+  the workers; Azure inference remains separate usage.
 
 ## Milestone 01 — PERSONAL STACK DEPLOYED AND VERIFIED; OWNER ACCEPTANCE PENDING
 

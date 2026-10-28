@@ -88,3 +88,23 @@ worker against a downgraded schema.
 
 See `IMPLEMENTATION_STATUS.md` for actual test and deployment results. Owner acceptance of
 Milestone 1 remains pending; the feature branch is not merged.
+
+### Current personal deployment
+
+Release `b2cf3c9` is installed in `.local/releases/telegram-owner-final/` with migration `0013`.
+LaunchAgents `com.mica.api`, `com.mica.frontend`, `com.mica.worker` and `com.mica.telegram` run the
+matching release; the fourth runs the Telegram long-polling loop. Logs and the restore-tested
+pre-upgrade backup are in `.local/rollouts/telegram-owner-trial/`. The previous `acaa10c` release
+and its original three-service config archive remain under `.local/releases/m1-final/` and
+`.local/rollouts/20261026-m1/launchagents-final.tgz` for recovery. The private `.env` is read using
+an absolute path and is never included in Git.
+
+Before linking, the bot intentionally ignores ordinary DMs. Use the private invitation generated
+in the authenticated web app, rather than starting a conversation through its public username alone.
+After linking, Telegram is usable from your phone while the Mac/backend/workers stay awake and online.
+
+The owner has now linked their account and enabled both permissions. Two real incoming messages
+were processed through Azure and their replies accepted by Telegram. The link was preserved through
+the final service restart. Normal greetings, questions and explicit tracking requests bypass pending
+daily prompts rather than becoming incidental journal entries. The remaining real-world check-in
+trial is owner-driven; no multi-user access or WhatsApp delivery has been enabled.
