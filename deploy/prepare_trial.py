@@ -28,10 +28,12 @@ def private_json(path, values):
 
 
 def main():
+    from app.cloud_trial import window as valid_window
     from app.gateway import OpenAICompatibleGateway
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=["prepare", "activate"])
+    parser.add_argument("operation", choices=["prepare", "activate", "refresh", "extend"])
+    parser.add_argument("--end-at", help="Explicit owner-authorized timezone-aware trial cutoff")
     args = parser.parse_args()
     state = ROOT / ".local/rollouts/modal-trial"
     if not state.is_dir():
@@ -43,7 +45,21 @@ def main():
         "MICA_TRIAL_START_AT": now.isoformat(),
         "MICA_TRIAL_END_AT": (now + timedelta(hours=46)).isoformat(),
     }
-    if args.operation == "prepare":
+    if args.operation == "extend":
+        if not args.end_at:
+            raise SystemExit("extend requires the owner's explicit --end-at cutoff")
+        window = json.loads((state / "window-secret.json").read_text())
+        previous = valid_window(window)
+        end = datetime.fromisoformat(args.end_at)
+        if not previous or end.tzinfo is None or end <= max(now, previous[1]):
+            raise SystemExit("Extension must be later than the valid existing cutoff and now")
+        window["MICA_TRIAL_END_AT"] = end.isoformat()
+        window["MICA_TRIAL_AUTHORIZED_END_AT"] = end.isoformat()
+        if not valid_window(window):
+            raise SystemExit("Invalid extended window")
+    elif args.end_at:
+        raise SystemExit("--end-at is only valid with extend")
+    if args.operation in {"prepare", "refresh"}:
         values = {
             key: value for key, value in dotenv_values(ROOT / ".env").items() if value is not None
         }
@@ -87,7 +103,13 @@ def main():
         }
         if gateway.reasoning_effort:
             runtime["MODEL_REASONING_EFFORT"] = gateway.reasoning_effort
-        for key in ("MODEL_INPUT_COST_PER_MILLION", "MODEL_OUTPUT_COST_PER_MILLION"):
+        for key in (
+            "MODEL_INPUT_COST_PER_MILLION",
+            "MODEL_OUTPUT_COST_PER_MILLION",
+            "MICA_MIN_CHECKIN_SECONDS",
+            "MICA_REMINDERS_PER_HOUR",
+            "MICA_REMINDERS_PER_DAY",
+        ):
             if key in values:
                 runtime[key] = values[key]
         backup = state / "pre-cloud.env"
@@ -95,12 +117,13 @@ def main():
             shutil.copyfile(ROOT / ".env", backup)
             os.chmod(backup, 0o600)
         private_json(state / "runtime-secret.json", runtime)
-    private_json(state / "window-secret.json", window)
+    if args.operation != "refresh":
+        private_json(state / "window-secret.json", window)
     print(
         json.dumps(
             {
                 "operation": args.operation,
-                "window": window,
+                "window": window if args.operation != "refresh" else "unchanged",
                 "secrets": "written only to private ignored rollout files",
             }
         )

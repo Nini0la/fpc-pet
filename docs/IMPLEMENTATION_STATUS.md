@@ -1,5 +1,147 @@
 # Implementation Status
 
+## Owner-authorized publication and trial extension — 2026-10-29
+
+The owner explicitly requested **commit, push and deploy**, and extended the trial to November 3.
+Retaining the existing time of day, the authorized new cutoff is **2026-11-03 09:54:34 UTC**.
+Deployment/application of the new cutoff is pending the rollout recorded below. The original
+start remains 2026-10-28 11:54:34 UTC; the branch must remain unmerged.
+
+`cloud_trial.window` retains the default 46-hour limit unless the private window configuration
+contains an explicit `MICA_TRIAL_AUTHORIZED_END_AT`. The configured end cannot exceed that bound;
+naive/malformed timestamps fail closed and the cutoff remains exclusive. `prepare_trial.py extend
+--end-at ...` preserves the existing start and requires an explicit later timestamp. This is an
+operator configuration change, not permission obtainable through conversation/tool arguments.
+After this addition: **571 backend tests passed in 106.38s**, Ruff and mypy passed. Tests cover
+the exact November 3 bound, missing authorization, invalid bounds and overrun rejection.
+
+## Semantic conversation integration — verified locally, deployment pending (2026-10-29)
+
+**Source:** uncommitted working-tree changes on `feat/functional-autonomy`, based on `84c710d`.
+**Production:** read-only Modal inspection at approximately 04:49 UTC confirmed revision `8b8bb7b`,
+schema `0013`, active owner link, current Telegram/scheduler heartbeats and 16 sent deliveries.
+At that inspection, the trial still ended **2026-10-30 09:54:34 UTC**. The following results describe the new source,
+not the currently deployed bot; live-channel semantic acceptance and owner approval remain pending.
+
+### Implemented behavior
+
+- The existing Azure conversational turn interprets live messages and chooses tools. Pending
+  reflection/vocabulary records no longer consume arbitrary replies through ordered keyword gates.
+  Ordinary conversation needs no tool call. Structured writes still require backend validation,
+  owner scope, current permission, versions and domain preconditions.
+- Migration `0014` adds durable proposals and separate one-time/recurring reminder plans, workflow
+  state/version fields, original Telegram message timestamps and reminder-plan action references.
+  Proposals retain parameters across clarification, unrelated conversation and process restart;
+  execution, amendment, pause/resume and cancellation have persisted state and provenance.
+- One-time reminders and finite recurring check-ins use the existing scheduler/action/outbox path.
+  Structured times resolve against the source message timestamp and stored timezone. Rate limits,
+  quiet hours, availability, cancellation and stale-action checks remain deterministic.
+- Existing Today controls and Context Inspector expose plans, proposals, selected conversational
+  state, tool receipts, state transitions and current action/Telegram delivery evidence.
+- `deploy/prepare_trial.py refresh` prepares only the runtime Secret input. It leaves the existing
+  trial-window file untouched, avoiding a new 46-hour authorization window during a code update.
+
+### Verification on the current source
+
+| Check | Result |
+| --- | --- |
+| `uv run ruff check app tests ../deploy` | Passed |
+| `uv run mypy app` | Passed, 38 source files |
+| `POSTGRES_TEST_URL=postgresql+psycopg:///mica_autonomy_test uv run pytest -q --tb=short` | **567 passed in 104.94s** |
+| Frontend `npm run typecheck` and `npm run lint` | Passed |
+| `npm test -- --maxWorkers=1 --testTimeout=30000` | **69 passed**, 12 files |
+| Frontend `npm run build` | Passed, Next.js 16.4.3 |
+| Current architecture diagrams | **8 parsed and rendered**, Mermaid 12.2.0; 17 source references checked |
+| `git diff --check` | Passed |
+
+The PostgreSQL regression suite includes proposal/plan permission and ownership checks, stale
+versions, interruption/resumption, clarification timing, DST behavior, rate safeguards, claimed-action
+pause/resume, older proposal lookup, duplicate events and crash-stage recovery. Automated Telegram
+transport tests use fakes and do not establish delivery of the new implementation to the real bot.
+
+**Fresh real-Azure run:** created and migrated the isolated local database
+`mica_semantic_final_smoke_test`, then ran from `backend/`:
+
+```sh
+DATABASE_URL=postgresql+psycopg:///mica_semantic_final_smoke_test uv run alembic upgrade head
+DATABASE_URL=postgresql+psycopg:///mica_semantic_final_smoke_test uv run python -m tests.live_semantic_smoke
+DATABASE_URL=postgresql+psycopg:///mica_semantic_final_smoke_test MICA_VARIANT_ONLY=1 uv run python -m tests.live_semantic_smoke
+```
+
+The main harness requires a fresh database and refuses non-`*_smoke_test` targets. It starts an
+actual HTTP API on loopback port 8014, uses Azure with synthetic test conversation and a controlled
+clock, restarts the API, and invokes the real scheduler as a separate process. Telegram and WhatsApp
+credentials are blank in the test process. All six acceptance cases passed:
+
+1. “Not so great” received a natural follow-up without an unsolicited vocabulary answer capture.
+2. Both punctuated and exact punctuationless “You’re not gonna ask how my day went” interrupted
+   vocabulary naturally, with no grading/write tool call.
+3. “Remind me to look for Pelumi Buari at 3pm.” saved a one-time reminder for the next 15:00
+   Africa/Lagos occurrence (14:00 UTC) without requesting an unnecessary date.
+4. “Could you pls remnd me to focus every 8min ?” saved a finite 480-second recurring plan.
+5. An offered 15-minute alternative survived two unrelated turns and an API restart;
+   “OK do that thanks” executed the stored proposal and updated the existing plan to 900 seconds.
+6. “Remind me to stretch.” retained a clarification request; “15min from now” completed its
+   timing from the clarification message. Two real worker sweeps created exactly two due effects
+   total, with no duplicate on the second sweep and the one-time plan completed.
+
+Each observed conversational turn used **one inference call**. Private reports are
+`.local/rollouts/semantic-integration/live-azure-results.json` and `live-azure-variant.json`.
+These are real Azure/application/worker results with synthetic inputs, not owner-sent Telegram turns.
+
+### Migration and remaining rollout gate
+
+A prior real-data rehearsal restored a PostgreSQL 18 dump into the separate hosted database
+`mica_semantic_recovery`. Upgrade `0013 → 0014`, downgrade and re-upgrade preserved all original
+columns of **316 original rows**. Private evidence: `precheck-0013.dump`,
+`recovery-original-rows.json` and `rehearse.py` under `.local/rollouts/semantic-integration/`.
+The working PostgreSQL 18 clients are in `.local/tools/pg18/bin/`.
+
+This is preservation evidence for pre-existing data, not a lossless rollback of new features:
+`0014` downgrade removes proposals, reminder plans and their scheduled actions/Telegram delivery
+records, drops new workflow/timestamp fields, and clamps sub-15-minute legacy commitment cadence
+back to 15 minutes. Back up the current authoritative database before any rollback.
+
+Before production migration: quiesce writers, take a fresh PostgreSQL 18 backup and row manifest,
+pin the verified application source, migrate Neon, deploy matching backend/worker/frontend,
+and verify preservation, runtime identity and actual owner-channel behavior. Preserve the trial
+cutoff and owner permissions. See [MODAL_TRIAL.md](MODAL_TRIAL.md#semantic-integration-update-procedure).
+No merge, owner acceptance or Milestone 2 completion is implied by these checks.
+
+## Conversation/autonomy architecture map — historical pre-integration audit
+
+Inspected the actual `feat/functional-autonomy` repository at `84c710d` (application revision
+`8b8bb7b`) and added [the baseline lifecycle map](architecture/CONVERSATION_AND_AUTONOMY_BASELINE.md). The map covers
+normal web/Telegram messages, pending reflection/vocabulary workflows, model/tool execution,
+clarification, autonomous scheduling, interruption/resumption, transport recovery and the separate
+implemented-but-disabled delegated responsibility path. The original audit is retained separately;
+`ARCHITECTURE.md` now links to the updated semantic map and identifies older descriptions as historical.
+
+Verified architectural distinctions:
+
+- Web and ordinary Telegram DMs share `AgentRuntime.handle`, domain logic, owner conversation and
+  PostgreSQL state, but use different instances, permission sources and transaction/delivery wrappers.
+- Live routing uses ordered conditions/regexes plus pending-row selection; `StateExtractor` is the
+  no-gateway development path, not a universal live intent classifier. Pending skills read their
+  own state instead of always going through the model context builder.
+- No generic clarification continuation, workflow stack or checkpointed LLM program is implemented.
+  Clarification answers are new turns. Pending domain rows, explicit commitment resume and crash
+  recovery are distinct mechanisms with different eligibility and retry rules.
+- Tool rejection/provider failure does not necessarily mean no earlier write committed. Event,
+  model, workflow, in-app effect and external delivery statuses are separate evidence layers.
+- Manual scheduled-event APIs, lifecycle controls, adapter commands and responsibility callbacks
+  must not all be drawn as equivalent calls through AgentRuntime. The accepted `dormancy_scan`
+  event currently has no work handler.
+
+Validation: **12 Mermaid diagrams parsed and rendered with Mermaid 12.2.0 in headless Chromium**;
+**58 local source/document references** and their line ranges checked; **12 explicitly named test
+references** and the document's heading links checked. A sequence-diagram punctuation parse issue
+was corrected before the final successful render. Rendered artifacts and the checker are retained
+in the temporary `opencode/mica-architecture-check/` tooling directory, outside the repository.
+No application tests were added or rerun for this documentation-only audit, and no live messages,
+data mutations, service restarts or deployment changes were performed. Existing test sources and
+the earlier recorded acceptance results are cited without representing them as new test runs.
+
 ## Authorized 46-hour Modal trial — ACTIVE, laptop-independent operation verified
 
 **Deployed revision:** `8b8bb7b`. **Window:** 2026-10-28 11:54:34 UTC through

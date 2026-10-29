@@ -34,7 +34,7 @@ from app.models import (
     User,
 )
 
-POLICY_VERSION = "context-v1"
+POLICY_VERSION = "context-v2"
 MAX_RECORDS = 12
 MAX_RECORD_CHARS = 1500
 CANDIDATES_PER_TYPE = 40
@@ -82,6 +82,7 @@ def build_context(
     max_chars: int = 12000,
     recent_only: bool = False,
     now: datetime | None = None,
+    source_id: str | None = None,
 ) -> ContextBundle:
     """Retrieve deterministic lexical/link context, never revisions or cached state.
 
@@ -135,6 +136,9 @@ def build_context(
                 "timezone": profile.timezone,
                 "checkins_enabled": profile.checkins_enabled,
             }
+            from .continuation import conversation_state
+
+            payload["conversation_state"] = conversation_state(db, user_id, now, source_id)
     if _size(payload) > max_chars:
         raise ValueError("Context budget too small")
     manifest: dict[str, Any] = {
@@ -150,6 +154,7 @@ def build_context(
             "recent_messages": 4,
             "query_terms": 24,
             "recent_only": recent_only,
+            "conversation_state_max_chars": 5000,
         },
     }
     included = manifest["included"]
@@ -246,36 +251,7 @@ def build_context(
 
         # Entries carry a link priority, exact lexical score and recency tie-break.
         candidates: list[tuple[Any, str, int, int, str]] = []
-        lifecycle_words = {
-            "commitment",
-            "commitments",
-            "goal",
-            "goals",
-            "deadline",
-            "finished",
-            "completed",
-            "pause",
-            "resume",
-            "cancel",
-            "unavailable",
-            "reopen",
-        }
-        current_ids = (
-            set(
-                db.scalars(
-                    select(Commitment.id)
-                    .where(
-                        Commitment.user_id == user_id,
-                        Commitment.deleted.is_(False),
-                        Commitment.state.in_(("open", "in_progress", "waiting", "paused")),
-                    )
-                    .order_by(Commitment.last_touched_at.desc(), Commitment.id)
-                    .limit(6)
-                )
-            )
-            if set(terms) & lifecycle_words
-            else set()
-        )
+        current_ids: set[str] = set()  # Intentions are provided in conversation_state.
         delegation_score = lexical_score(
             (
                 Responsibility.recipient_name,

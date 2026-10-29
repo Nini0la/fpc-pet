@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .agent import AgentRuntime, RuntimeEvent
 from .clock import FakeClock, SystemClock
 from .commitments import OPEN, next_allowed, plan_next, utc
-from .models import Commitment, ScheduledAction, User, uid
+from .models import Commitment, ReminderPlan, ScheduledAction, User, uid
 from .responsibilities import lock_user
 
 LEASE_SECONDS = 60
@@ -31,6 +31,7 @@ def prepare(db: Session, user: User, now: datetime) -> int:
         due: datetime,
         *,
         item: Commitment | None = None,
+        plan: ReminderPlan | None = None,
         day=None,
         state="pending",
         reason="due",
@@ -49,7 +50,8 @@ def prepare(db: Session, user: User, now: datetime) -> int:
                 action_key=key,
                 kind=kind,
                 commitment_id=item.id if item else None,
-                subject_version=item.version if item else 0,
+                reminder_plan_id=plan.id if plan else None,
+                subject_version=item.version if item else plan.version if plan else 0,
                 preference_version=user.autonomy_version,
                 local_date=day,
                 due_at=due,
@@ -92,6 +94,24 @@ def prepare(db: Session, user: User, now: datetime) -> int:
                     f"{utc(due).isoformat()}:{user.autonomy_version}"
                 )
                 add(key, "commitment_followup", utc(due), item=item)
+
+    for plan in db.scalars(
+        select(ReminderPlan)
+        .where(
+            ReminderPlan.user_id == user.id,
+            ReminderPlan.state == "active",
+            ReminderPlan.next_due_at <= now,
+        )
+        .order_by(ReminderPlan.next_due_at, ReminderPlan.id)
+        .limit(100)
+    ):
+        assert plan.next_due_at is not None
+        add(
+            f"reminder:{plan.id}:{plan.version}:{utc(plan.next_due_at).isoformat()}:{user.autonomy_version}",
+            "reminder_once" if plan.mode == "once" else "reminder_checkin",
+            utc(plan.next_due_at),
+            plan=plan,
+        )
 
     zone = ZoneInfo(user.timezone)
     today = utc(now).astimezone(zone).date()

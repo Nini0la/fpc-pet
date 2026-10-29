@@ -382,6 +382,8 @@ class EveningReflectionSkill:
         event_id: str,
         now: datetime,
         intended_local_date: date | None = None,
+        *,
+        append: bool = True,
     ) -> bool:
         from .models import (
             Episode,
@@ -418,16 +420,17 @@ class EveningReflectionSkill:
             db.expire_all()
             return False
         conversation = get_or_create_conversation(db, user_id, created_at=now)
-        message = append_message(
-            db,
-            user_id=user_id,
-            conversation_id=conversation.id,
-            role="assistant",
-            actor="assistant",
-            content=self.checkin,
-            created_at=now,
-        )
-        prompt.message_id = message.id
+        if append:
+            message = append_message(
+                db,
+                user_id=user_id,
+                conversation_id=conversation.id,
+                role="assistant",
+                actor="assistant",
+                content=self.checkin,
+                created_at=now,
+            )
+            prompt.message_id = message.id
         episode = Episode(
             user_id=user_id,
             summary=f"Evening reflection started for {local_date.isoformat()}",

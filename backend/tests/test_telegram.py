@@ -117,7 +117,8 @@ def create_via_telegram(client, setup):
                     {
                         "title": "Telegram trial",
                         "deadline_text": "before 9pm tomorrow",
-                        "followup_enabled": True,
+                    "followup_enabled": True,
+                    "followup_minutes": 15,
                     },
                 ),
             ),

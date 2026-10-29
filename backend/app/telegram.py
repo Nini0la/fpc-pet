@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
@@ -13,6 +13,7 @@ from .commitments import OPEN, available, quiet, utc
 from .models import (
     Commitment,
     Message,
+    ReminderPlan,
     ScheduledAction,
     TelegramBot,
     TelegramConnection,
@@ -237,6 +238,9 @@ def ingest(db, bot: TelegramBot, updates: list, now: datetime):
                 update_id=number,
                 generation=link.generation,
                 content=content,
+                message_at=datetime.fromtimestamp(msg["date"], timezone.utc)
+                if type(msg.get("date")) is int and 0 <= msg["date"] <= utc(now).timestamp() + 300
+                else now,
                 allow_memory_write=link.allow_memory_write,
                 created_at=now,
             )
@@ -284,6 +288,7 @@ def process_one(sessions, runtime, bot_id: str):
                 content=incoming.content,
                 conversation_id=conversation.id,
                 allow_memory_write=incoming.allow_memory_write and link.allow_memory_write,
+                message_at=incoming.message_at or incoming.created_at,
             ),
             commit=False,
         )
@@ -359,6 +364,24 @@ def permitted(db, delivery, link, now):
     if not link.proactive_enabled:
         return "proactive_delivery_paused"
     action = db.get(ScheduledAction, delivery.action_id)
+    if action and action.reminder_plan_id:
+        plan = db.get(ReminderPlan, action.reminder_plan_id)
+        if (
+            action.user_id != user.id
+            or action.state != "succeeded"
+            or not plan
+            or plan.user_id != user.id
+            or plan.version != action.subject_version
+            or plan.state not in {"active", "completed"}
+            or utc(action.completed_at) < utc(link.proactive_since)
+            or utc(action.completed_at) < utc(now) - timedelta(hours=2)
+        ):
+            return "reminder_changed"
+        if plan.mode == "recurring" and not user.checkins_enabled:
+            return "checkins_disabled"
+        if not available(user, plan.availability or {}, now):
+            return "availability"
+        return "quiet_hours" if plan.respect_quiet_hours and quiet(user, now) else None
     if (
         not action
         or action.user_id != user.id

@@ -15,10 +15,16 @@ def window(values: Mapping[str, str] | None = None):
     try:
         start = datetime.fromisoformat(values["MICA_TRIAL_START_AT"])
         end = datetime.fromisoformat(values["MICA_TRIAL_END_AT"])
+        authorized_end = (
+            datetime.fromisoformat(values["MICA_TRIAL_AUTHORIZED_END_AT"])
+            if values.get("MICA_TRIAL_AUTHORIZED_END_AT")
+            else start + timedelta(hours=46)
+        )
         if (
             start.tzinfo is None
             or end.tzinfo is None
-            or not (timedelta(0) < end - start <= timedelta(hours=46))
+            or authorized_end.tzinfo is None
+            or not start < end <= authorized_end
         ):
             return None
         return start, end

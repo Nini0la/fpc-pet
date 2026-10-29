@@ -50,6 +50,10 @@ def perform(
     if action is None or user is None or action.state != "executing":
         return {"state": "skipped", "reason": "not_claimed"}
     action.source_event_id = event_id
+    if action.reminder_plan_id:
+        from .reminders import perform_plan
+
+        return perform_plan(db, user, action, event_id, now, finish)
     local_day = utc(now).astimezone(ZoneInfo(user.timezone)).date()
     if action.preference_version != user.autonomy_version:
         return finish(action, "skipped", "preferences_changed", now)

@@ -72,6 +72,7 @@ def cancel_for_preferences(db: Session, user: User, now) -> None:
         update(ScheduledAction)
         .where(
             ScheduledAction.user_id == user.id,
+            ScheduledAction.reminder_plan_id.is_(None),
             ScheduledAction.state.in_(["pending", "executing", "retryable"]),
         )
         .values(

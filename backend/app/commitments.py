@@ -21,7 +21,8 @@ from .models import (
     User,
 )
 from .persistence import MutationResult, atomic_update
-from .prospective import parse_commitment_timing
+from .prospective import ParsedTiming, parse_commitment_timing
+from .temporal import When, resolve_when
 
 OPEN = {"open", "in_progress", "waiting"}
 TERMINAL = {"complete", "completed", "cancelled", "abandoned"}
@@ -89,14 +90,16 @@ class PlanFields(BaseModel):
     available_minutes: int | None = Field(default=None, ge=0, le=10080)
     blocker: str | None = Field(default=None, max_length=1000)
     followup_enabled: bool | None = None
-    followup_minutes: int | None = Field(default=None, ge=15, le=10080)
+    followup_minutes: int | None = Field(default=None, ge=1, le=10080)
     max_followups: int | None = Field(default=None, ge=0, le=10)
+    estimated_effort_minutes: int | None = Field(default=None, ge=1, le=10080)
 
 
 class CreateCommitment(PlanFields):
     title: str = Field(min_length=1, max_length=500)
     project_id: str | None = Field(default=None, min_length=1, max_length=36)
     deadline_text: str | None = Field(default=None, min_length=1, max_length=500)
+    deadline: When | None = None
 
 
 class ChangeCommitment(PlanFields):
@@ -107,6 +110,7 @@ class ChangeCommitment(PlanFields):
     title: str | None = Field(default=None, min_length=1, max_length=500)
     deadline_text: str | None = Field(default=None, min_length=1, max_length=500)
     clear_deadline: bool = False
+    deadline: When | None = None
 
 
 class ListCommitments(BaseModel):
@@ -193,7 +197,7 @@ def plan_next(user: User, item: Commitment, now: datetime) -> datetime | None:
         or item.ambiguity != "none"
     ):
         return None
-    earliest = utc(now) + timedelta(minutes=15)
+    earliest = utc(now) + timedelta(minutes=1)
     candidate = utc(now) + timedelta(minutes=item.followup_minutes)
     if item.last_surfaced_at is None and item.due_at and utc(item.due_at) > earliest:
         lead = timedelta(minutes=max(item.estimated_effort_minutes or 120, 15))
@@ -255,7 +259,24 @@ def temporal_input(phrase: str | None, text: str, trusted: bool) -> str:
     return phrase
 
 
-def field_changes(args: PlanFields, user: User, text: str, now: datetime, *, trusted: bool) -> dict:
+def structured_timing(value: When, reference: datetime, timezone_name: str, source: str):
+    granularity = (
+        "second" if value.kind == "after" or (value.at and len(value.at) > 5) else "minute"
+    )
+    if value.kind == "local" and value.date is not None and value.at is None:
+        # A date-only deadline is a date bound, not an invented requested clock time.
+        granularity = "date"
+        value = value.model_copy(
+            update={"at": "00:00" if value.bound == "exclusive" else "23:59:59"}
+        )
+    return ParsedTiming(
+        resolve_when(value, reference, timezone_name), granularity, source, bound=value.bound
+    )
+
+
+def field_changes(
+    args: PlanFields, user: User, text: str, now: datetime, *, trusted: bool, semantic: bool = False
+) -> dict:
     changes = args.model_dump(
         exclude_none=True,
         include={
@@ -268,30 +289,37 @@ def field_changes(args: PlanFields, user: User, text: str, now: datetime, *, tru
             "followup_enabled",
             "followup_minutes",
             "max_followups",
+            "estimated_effort_minutes",
         },
     )
     if args.constraints and any(len(value) > 300 for value in args.constraints):
         raise ValueError("Each constraint must be at most 300 characters")
-    if args.followup_enabled and not trusted and not explicit_followup(text):
+    if args.followup_enabled and not trusted and not semantic and not explicit_followup(text):
         raise ValueError("Ask whether the owner wants scheduled in-app follow-ups")
-    if args.followup_enabled is None and not trusted and explicit_followup(text):
+    if args.followup_enabled is None and not trusted and not semantic and explicit_followup(text):
         changes["followup_enabled"] = True
-    cadence = re.search(r"\bevery\s+(\d+)\s+(minutes?|hours?|days?)\b", text, re.I)
-    if cadence and not trusted:
+    cadence = (
+        None if semantic else re.search(r"\bevery\s+(\d+)\s+(minutes?|hours?|days?)\b", text, re.I)
+    )
+    if cadence and not trusted and not semantic:
         unit = cadence.group(2).casefold()
         minutes = int(cadence.group(1)) * (
             1440 if unit.startswith("day") else 60 if unit.startswith("hour") else 1
         )
-        if not 15 <= minutes <= 10080:
-            raise ValueError("Choose a check-in interval between 15 minutes and one week")
+        if not 1 <= minutes <= 10080:
+            raise ValueError("Choose a check-in interval between one minute and one week")
         changes["followup_minutes"] = minutes
-    elif not trusted:
+    elif not trusted and not semantic:
         changes.pop("followup_minutes", None)
     if args.blocked_periods is not None:
-        if not trusted and any(period not in normalized(text) for period in args.blocked_periods):
+        if (
+            not trusted
+            and not semantic
+            and any(period not in normalized(text) for period in args.blocked_periods)
+        ):
             raise ValueError("Availability changes need supporting owner wording")
         until = args.availability_until
-        if "this week" in normalized(text):
+        if not semantic and "this week" in normalized(text):
             local_date = utc(now).astimezone(ZoneInfo(user.timezone)).date()
             until = local_date + timedelta(days=6 - local_date.weekday())
         changes["availability"] = {
@@ -321,6 +349,7 @@ def describe(item: Commitment, user: User) -> dict[str, Any]:
         if item.due_at
         else None,
         "due_bound": item.due_bound,
+        "due_granularity": item.due_granularity,
         "timezone": user.timezone,
         "ambiguity": item.ambiguity,
         "constraints": item.constraints,
@@ -347,12 +376,17 @@ def create(
     source_id: str,
     now: datetime,
     allowed_ids: set[str],
+    *,
+    semantic: bool = False,
+    reference_time: datetime | None = None,
 ) -> dict:
     user = db.get(User, user_id)
     assert user is not None
-    if re.search(
-        r"\b(maybe|might|perhaps|sometime|considering)\b", normalized(text)
-    ) and not re.search(r"\b(track|save|record|remind)\b", normalized(text)):
+    if (
+        not semantic
+        and re.search(r"\b(maybe|might|perhaps|sometime|considering)\b", normalized(text))
+        and not re.search(r"\b(track|save|record|remind)\b", normalized(text))
+    ):
         return reject(
             "ambiguous_intention",
             "Would you like this tracked as a commitment, or are we just exploring it?",
@@ -369,10 +403,23 @@ def create(
     ):
         return reject("unknown_project", "Which of your projects should this belong to?")
     try:
-        timing = parse_commitment_timing(
-            temporal_input(args.deadline_text, text, False), now, user.timezone
+        timing = (
+            structured_timing(
+                args.deadline,
+                reference_time or now,
+                user.timezone,
+                args.deadline_text or text[:500],
+            )
+            if args.deadline
+            else ParsedTiming()
+            if semantic and args.deadline_text is None
+            else parse_commitment_timing(
+                temporal_input(args.deadline_text, text, semantic),
+                reference_time or now,
+                user.timezone,
+            )
         )
-        changes = field_changes(args, user, text, now, trusted=False)
+        changes = field_changes(args, user, text, now, trusted=False, semantic=semantic)
     except ValueError as error:
         return reject("clarification_required", str(error))
     if timing.ambiguity != "none":
@@ -389,7 +436,9 @@ def create(
         deadline_hint=timing.source_phrase,
         due_granularity=timing.due_granularity,
         due_bound=timing.bound if timing.due_at else "unspecified",
-        estimated_effort_minutes=timing.estimated_effort_minutes,
+        estimated_effort_minutes=changes.pop(
+            "estimated_effort_minutes", timing.estimated_effort_minutes
+        ),
         confidence=1.0,
         derivation="explicit-intention-v1",
         created_at=now,
@@ -423,10 +472,16 @@ def create(
 
 
 def resolve(
-    db: Session, user_id: str, args: ChangeCommitment, text: str, *, trusted: bool
+    db: Session,
+    user_id: str,
+    args: ChangeCommitment,
+    text: str,
+    *,
+    trusted: bool,
+    semantic: bool = False,
 ) -> Commitment | None:
     query = select(Commitment).where(Commitment.user_id == user_id, Commitment.deleted.is_(False))
-    if trusted and args.id:
+    if (trusted or semantic) and args.id:
         return db.scalar(query.where(Commitment.id == args.id))
     reference = normalized(args.reference or "")
     if not reference and args.id:
@@ -438,7 +493,7 @@ def resolve(
             r"(?<!\w)" + re.escape(normalized(named.title)) + r"(?!\w)", normalized(text)
         ):
             reference = normalized(named.title)
-    if reference and reference not in normalized(text):
+    if not semantic and reference and reference not in normalized(text):
         return None
     if reference and args.id == reference:
         return db.scalar(query.where(Commitment.id == args.id))
@@ -467,10 +522,12 @@ def change(
     now: datetime,
     *,
     trusted: bool = False,
+    semantic: bool = False,
+    reference_time: datetime | None = None,
 ) -> dict:
     user = db.get(User, user_id)
     assert user is not None
-    item = resolve(db, user_id, args, text, trusted=trusted)
+    item = resolve(db, user_id, args, text, trusted=trusted, semantic=semantic)
     if item is None:
         return reject(
             "ambiguous_reference",
@@ -492,7 +549,7 @@ def change(
         return reject(
             "version_conflict", "That commitment changed; please refresh its current state."
         )
-    if args.action == "complete" and not trusted:
+    if args.action == "complete" and not trusted and not semantic:
         lower = normalized(text)
         if re.search(r"\b(?:haven't|not|never|didn't|hasn't)\b", lower) or not re.search(
             r"\b(?:i(?:'ve| have)? (?:finished|completed)|done with|mark .+ complet)", lower
@@ -501,21 +558,36 @@ def change(
                 "completion_not_confirmed", "Are you confirming that this commitment is complete?"
             )
     try:
-        changes = field_changes(args, user, text, now, trusted=trusted)
-        if args.clear_deadline and args.deadline_text:
+        changes = field_changes(args, user, text, now, trusted=trusted, semantic=semantic)
+        if args.clear_deadline and (args.deadline_text or args.deadline):
             return reject(
                 "conflicting_deadline_change", "Should I replace the deadline or clear it?"
             )
-        if args.blocked_periods is not None and any(
-            period in normalized(args.next_action or item.next_action)
-            for period in args.blocked_periods
+        if (
+            not semantic
+            and args.blocked_periods is not None
+            and any(
+                period in normalized(args.next_action or item.next_action)
+                for period in args.blocked_periods
+            )
         ):
             changes["next_action"] = "Choose an available time for the next step"
         if args.title is not None:
             changes["title"] = args.title
-        if args.deadline_text is not None:
-            timing = parse_commitment_timing(
-                temporal_input(args.deadline_text, text, trusted), now, user.timezone
+        if args.deadline_text is not None or args.deadline is not None:
+            timing = (
+                structured_timing(
+                    args.deadline,
+                    reference_time or now,
+                    user.timezone,
+                    args.deadline_text or text[:500],
+                )
+                if args.deadline
+                else parse_commitment_timing(
+                    temporal_input(args.deadline_text, text, trusted or semantic),
+                    reference_time or now,
+                    user.timezone,
+                )
             )
             if timing.ambiguity != "none" or timing.due_at is None:
                 return reject(

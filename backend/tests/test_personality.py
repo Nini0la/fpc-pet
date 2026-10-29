@@ -54,6 +54,11 @@ def test_saved_temperament_reaches_both_model_calls_without_altering_tools(
         "get_commitments",
         "draft_responsibility",
         "retrieve_context",
+        "schedule_reminder",
+        "update_reminder",
+        "propose_action",
+        "resolve_proposal",
+        "manage_workflow",
     }
     assert final["tools"] == []
     assert saved["title"] == "Lantern"
@@ -85,7 +90,9 @@ def test_personality_does_not_turn_explanations_into_unrequested_memory(client, 
     assert client.get("/api/threads").json() == []
     assert client.get("/api/commitments").json() == []
     assert {tool["function"]["name"] for tool in gateway.calls[-1]["tools"]} == {
-        "retrieve_context", "get_commitments",
+        "retrieve_context",
+        "get_commitments",
+        "propose_action",
     }
 
 
@@ -109,9 +116,9 @@ def test_offline_personality_review_does_not_claim_generated_behavior(monkeypatc
         ("I locked your browser. You must rest.", "intrusive_control"),
         ("*wags a tiny tail*", "theatrical_narration"),
         ("Hewwo!", "baby_talk"),
-    ("I can see your desk.", "unsupported_visual_access"),
-    ("Take care, Mica.", "pet_name_used_for_user"),
-    ("I'll sit here and watch it with you.", "claimed_shared_watching"),
+        ("I can see your desk.", "unsupported_visual_access"),
+        ("Take care, Mica.", "pet_name_used_for_user"),
+        ("I'll sit here and watch it with you.", "claimed_shared_watching"),
     ],
 )
 def test_failure_mode_triage_flags_problematic_outputs(output, flag):

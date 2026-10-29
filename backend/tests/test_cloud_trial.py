@@ -41,3 +41,24 @@ def test_expired_trial_never_calls_model_or_telegram(monkeypatch):
         with pytest.raises(GatewayError):
             gateway.complete([], [])
         model.assert_not_called()
+
+
+def test_explicit_owner_extension_preserves_start_and_exclusive_cutoff():
+    start = datetime(2026, 10, 28, 11, 54, 34, tzinfo=timezone.utc)
+    end = datetime(2026, 11, 3, 9, 54, 34, tzinfo=timezone.utc)
+    values = settings() | {
+        "MICA_TRIAL_START_AT": start.isoformat(),
+        "MICA_TRIAL_END_AT": end.isoformat(),
+        "MICA_TRIAL_AUTHORIZED_END_AT": end.isoformat(),
+    }
+    assert window(values) == (start, end)
+    assert active(values, end - timedelta(seconds=1))
+    assert not active(values, end)
+    assert not active(values, start - timedelta(seconds=1))
+    assert window(values | {"MICA_TRIAL_AUTHORIZED_END_AT": ""}) is None
+    assert window(values | {"MICA_TRIAL_END_AT": (end + timedelta(seconds=1)).isoformat()}) is None
+
+
+@pytest.mark.parametrize("bound", ["invalid", "2026-11-03T09:54:34", "2026-10-27T00:00:00Z"])
+def test_invalid_explicit_authorization_fails_closed(bound):
+    assert window(settings() | {"MICA_TRIAL_AUTHORIZED_END_AT": bound}) is None

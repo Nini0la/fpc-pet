@@ -22,8 +22,11 @@ type Execution = {after_call_index: number; tool_call_id: string; name: string;
 export type ContextInspection = {
   message_id: string; response: string; created_at: string; status: string;
   policy: unknown; intervention_type: string | null;
+  execution_status?:string|null;event_id?:string|null;
+  execution_evidence?:unknown;
   trace: {schema_version: number; calls: ModelCall[]; tool_executions: Execution[];
-    final_call_index: number | null; output_origin: string} | null;
+    final_call_index: number | null; output_origin: string;
+    transitions?:unknown[];effects?:unknown[]} | null;
 };
 
 function text(value: unknown): string {
@@ -61,6 +64,7 @@ function ContextData({message}: {message: InputMessage}) {
           </summary><Json value={item}/></details>;
         })}</section>}
     {parsed.feedback != null && <section><h4>Previous assistance feedback</h4><Json value={parsed.feedback}/></section>}
+    {parsed.conversation_state!=null&&<section><h4>Pending activities, proposals and reminder plans</h4><Json value={parsed.conversation_state}/></section>}
     <details><summary>Exact context message, including its wrapper</summary><Json value={message.content}/></details>
   </div>;
 }
@@ -84,6 +88,7 @@ function CallDetail({call, executions}: {call: ModelCall; executions: Execution[
       <div><dt>Estimated cost</dt><dd>{call.usage?.cost_usd == null ? "Not configured / reported" : `$${call.usage.cost_usd.toFixed(6)}`}</dd></div>
     </dl>
     {call.error && <p className="error">Call failed: {call.error}. These inputs were prepared for the attempt; successful provider processing is not confirmed.</p>}
+    {call.response&&call.response.tool_calls.length===0&&<p>No tool calls were requested on this model call.</p>}
     {sections.map(section => {
       const message = call.request.messages[section.message_index];
       if(!message) return null;
@@ -161,12 +166,16 @@ export default function ResponseContext({messageId, onClose, onSessionExpired}: 
     {error && <div className="error-row" role="alert"><span>{error}</span><button className="secondary" onClick={() => {setError(""); setLoading(true); setAttempt(n => n + 1)}}>Retry context</button></div>}
     {data && <>
       <details className="context-section"><summary>Selected assistant response</summary><Json value={data.response}/></details>
+      {data.execution_evidence!=null&&<details className="context-section" open><summary>Current execution and delivery records</summary><p>Persisted action/provider evidence, separate from the historical model-input snapshot.</p><Json value={data.execution_evidence}/></details>}
       {data.status !== "captured" || !data.trace ? <p role="status" className="context-empty">{
         data.status === "cleared_by_memory_deletion" ? "This snapshot was cleared when retained memory was deleted, so deleted content cannot survive in captured prompts." :
         data.status === "cleared_by_user" ? "This context snapshot has been cleared. The conversation message is unchanged." :
         "Context was not recorded for this response. It may predate capture or come from a deterministic skill. We cannot reconstruct its exact inputs retrospectively."
       }</p> : <>
         <p className="muted">Output origin: {data.trace.output_origin.replaceAll("_", " ")}. Snapshots stay in your account and are never used as memory retrieval sources.</p>
+        {data.execution_status&&<p>Execution outcome: {data.execution_status} · event {data.event_id}</p>}
+        {Boolean(data.trace.effects?.length)&&<details className="context-section" open><summary>Persisted effect receipts</summary><p>These receipts were saved with this response. They do not assert external delivery.</p><Json value={data.trace.effects}/></details>}
+        {Boolean(data.trace.transitions?.length)&&<details className="context-section" open><summary>Workflow transitions</summary><Json value={data.trace.transitions}/></details>}
         {data.trace.calls.length === 0 ? <section><h3>No model call</h3><p>This response was produced by application policy, so there was no LLM context window.</p><Json value={data.policy}/></section> : <>
           <div className="context-call-picker" aria-label="Model calls">{data.trace.calls.map(item => <button
             key={item.index} className={selected === item.index ? "chip active" : "chip"} aria-pressed={selected === item.index} onClick={() => setSelected(item.index)}>

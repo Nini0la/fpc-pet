@@ -1,5 +1,11 @@
 # Architecture
 
+For the current source-verified lifecycle map and Mermaid diagrams, see
+[Conversation and autonomy](architecture/CONVERSATION_AND_AUTONOMY.md). It covers the shared web/
+Telegram runtime, routing and pending workflows, tools/clarification, durable scheduling and
+recovery. The milestone descriptions below include historical boundaries and deferred features;
+they should not be read as a complete map of the current runtime.
+
 ## Operational Responsibility Boundary
 
 `Responsibility` extends an existing Commitment rather than duplicating its title/deadline.

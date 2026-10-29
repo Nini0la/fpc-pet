@@ -142,7 +142,7 @@ export default function Autonomy({onExpired, onRefresh}:{onExpired:()=>void; onR
               <label>New deadline (in {preferences?.timezone})<input name="deadline_text" maxLength={500} placeholder="Thursday at 6pm"/></label>
               <label className="check"><input type="checkbox" name="clear_deadline"/>Clear deadline</label>
               <label className="check"><input type="checkbox" name="followup_enabled" defaultChecked={item.followup_enabled}/>Enable follow-ups for this commitment</label>
-              <label>Follow-up interval (minutes)<input type="number" name="followup_minutes" min={15} max={10080} required defaultValue={item.followup_minutes}/></label>
+              <label>Follow-up interval (minutes)<input type="number" name="followup_minutes" min={1} max={10080} required defaultValue={item.followup_minutes}/></label>
               <label>Maximum follow-ups for this plan<input type="number" name="max_followups" min={0} max={10} required defaultValue={item.max_followups}/></label>
               <button disabled={busy}>Save plan</button>
             </form>

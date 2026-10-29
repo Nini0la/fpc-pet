@@ -210,7 +210,7 @@ class Commitment(Owned, Base):
             "due_bound in ('unspecified','inclusive','exclusive')", name="ck_commitment_bound"
         ),
         CheckConstraint(
-            "followup_minutes between 15 and 10080 and max_followups between 0 and 10",
+            "followup_minutes between 1 and 10080 and max_followups between 0 and 10",
             name="ck_commitment_followup_policy",
         ),
     )
@@ -454,6 +454,8 @@ class ReflectionPrompt(Owned, Base):
     local_date: Mapped[date] = mapped_column(Date)
     policy_version: Mapped[str] = mapped_column(String(30))
     status: Mapped[str] = mapped_column(String(20), default="awaiting")
+    workflow_state: Mapped[str] = mapped_column(String(20), default="active")
+    version: Mapped[int] = mapped_column(Integer, default=1)
     message_id: Mapped[str | None] = mapped_column(ForeignKey("messages.id"), nullable=True)
     source_event_id: Mapped[str] = mapped_column(ForeignKey("agent_events.id"))
     journal_entry_id: Mapped[str | None] = mapped_column(
@@ -510,6 +512,8 @@ class VocabularyAttempt(Owned, Base):
     review_window: Mapped[str] = mapped_column(String(40))
     source_event_id: Mapped[str] = mapped_column(String(36))
     policy_version: Mapped[str] = mapped_column(String(30))
+    workflow_state: Mapped[str] = mapped_column(String(20), default="active")
+    version: Mapped[int] = mapped_column(Integer, default=1)
     __table_args__ = (
         UniqueConstraint(
             "user_id",
@@ -681,6 +685,7 @@ class ScheduledAction(Owned, Base):
     action_key: Mapped[str] = mapped_column(String(200))
     kind: Mapped[str] = mapped_column(String(40))
     commitment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reminder_plan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     subject_version: Mapped[int] = mapped_column(Integer)
     preference_version: Mapped[int] = mapped_column(Integer)
     local_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -719,6 +724,9 @@ class ScheduledAction(Owned, Base):
             name="fk_scheduled_message",
         ),
         Index("ix_scheduled_due_state", "state", "due_at"),
+        ForeignKeyConstraint(
+            ["user_id", "reminder_plan_id"], ["reminder_plans.user_id", "reminder_plans.id"]
+        ),
     )
 
 
@@ -754,6 +762,7 @@ class TelegramInput(Owned, Base):
     update_id: Mapped[int] = mapped_column(BigInteger)
     generation: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
+    message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     allow_memory_write: Mapped[bool] = mapped_column(Boolean, default=False)
     state: Mapped[str] = mapped_column(String(20), default="pending")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -795,4 +804,47 @@ class TelegramDelivery(Owned, Base):
         ),
         CheckConstraint("attempts between 0 and 3"),
         Index("ix_telegram_delivery_pending", "state", "retry_at"),
+    )
+
+
+class ConversationProposal(Owned, Base):
+    __tablename__ = "conversation_proposals"
+    tool_name: Mapped[str] = mapped_column(String(60))
+    title: Mapped[str] = mapped_column(String(500))
+    arguments: Mapped[dict] = mapped_column(JSON, default=dict)
+    state: Mapped[str] = mapped_column(String(30), default="proposed")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    source_message_id: Mapped[str] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    result: Mapped[dict | None] = mapped_column(JSON(none_as_null=True), nullable=True)
+    __table_args__ = (
+        ForeignKeyConstraint(["user_id", "source_message_id"], ["messages.user_id", "messages.id"]),
+        CheckConstraint(
+            "state in ('proposed','needs_clarification','paused','executed','cancelled')"
+        ),
+    )
+
+
+class ReminderPlan(Owned, Base):
+    __tablename__ = "reminder_plans"
+    topic: Mapped[str] = mapped_column(String(500))
+    mode: Mapped[str] = mapped_column(String(20))
+    state: Mapped[str] = mapped_column(String(20), default="active")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    timezone: Mapped[str] = mapped_column(String(64))
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_occurrences: Mapped[int] = mapped_column(Integer, default=1)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=0)
+    respect_quiet_hours: Mapped[bool] = mapped_column(Boolean, default=False)
+    availability: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_message_id: Mapped[str] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    __table_args__ = (
+        UniqueConstraint("user_id", "id", name="uq_reminder_plan_owner"),
+        ForeignKeyConstraint(["user_id", "source_message_id"], ["messages.user_id", "messages.id"]),
+        CheckConstraint("mode in ('once','recurring')"),
+        CheckConstraint("state in ('active','paused','completed','cancelled')"),
+        CheckConstraint("max_occurrences between 1 and 100 and occurrence_count >= 0"),
     )

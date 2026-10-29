@@ -1,10 +1,16 @@
-# Owner-only 46-hour cloud trial
+# Owner-only bounded cloud trial
 
 - **Application revision:** `8b8bb7bc0701d7e6da5575759875923e17c9c3f3`
 - **Start:** 2026-10-28 11:54:34 UTC
 - **End:** 2026-10-30 09:54:34 UTC
 - **Modal app:** `mica-owner-trial`, active app ID `ap-1yObYNST6QMQ207oajaSga`
 - **Dashboard:** https://modal.com/apps/nini-adegboyega/main/deployed/mica-owner-trial
+
+**Authorized update (2026-10-29, application pending):** the owner requested publication/deployment
+of the semantic integration and extension through **2026-11-03 09:54:34 UTC**, retaining the
+original start and time of day. The historical 46-hour cutover evidence below describes the first
+window. The runtime now permits a longer window only with an explicit private
+`MICA_TRIAL_AUTHORIZED_END_AT`; the configured cutoff may not exceed it.
 
 The existing Telegram adapter and personal scheduler now run in Modal against the owner's direct
 SSL Neon PostgreSQL connection. Azure remains the inference provider. The Mac can be off during
@@ -108,3 +114,48 @@ unmerged, Milestone 1 owner acceptance remains pending, and Milestone 2 has not 
 5. Return later and ask about it; check that Mica remembers the current state.
 
 Quiet hours remain 21:00–08:00 UTC. `/stop` pauses proactive Telegram DMs. No relinking is needed.
+
+## Semantic integration update procedure
+
+**Readiness as of 2026-10-29:** the semantic source/schema `0014` is verified locally but has not
+replaced the revision/schema at the top of this document. Current test and real-Azure evidence:
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). The original trial cutoff remains binding.
+
+1. Pin the tested source and retain the current release as a fallback. Keep the trial start;
+   do not invoke `prepare_trial.py activate` for this update. For the specifically authorized
+   extension, run `backend/.venv/bin/python deploy/prepare_trial.py extend --end-at
+   2026-11-03T09:54:34+00:00` and update the window Secret while the app is stopped.
+2. Stop only `mica-owner-trial` and quiesce optional local API writers. Confirm no processing/send
+   is in flight. Local background workers remain disabled.
+3. Back up authoritative Neon with `.local/tools/pg18/bin/pg_dump` (PostgreSQL 18.6), write a
+   private original-row manifest, and record the dump SHA-256. Use a new filename; preserve the
+   earlier rehearsal and pre-cloud backups. Never restore the frozen local DB over Neon.
+4. Apply `alembic upgrade 0014` against Neon with the pinned backend environment. Compare all
+   original columns/rows with the manifest before restarting writers. The separate recovery DB
+   rehearsal is useful evidence, but does not substitute for this quiescent backup.
+5. From the repository root, run `backend/.venv/bin/python deploy/prepare_trial.py refresh` and
+   update only `mica-owner-trial-runtime` from the private runtime-secret JSON. The helper reads
+   `git HEAD` for the revision, so run it against the exact pinned release. Verify the trial-window
+   input hash is unchanged by `refresh` (the separately authorized `extend` changes it).
+   Redeploy this app to refresh containers and their environment.
+6. Point optional local API/frontend services at the same tested release and schema. Use the
+   authenticated `inspect_runtime` Modal function to confirm revision, schema `0014`, owner link,
+   expiry and both heartbeats. Preserve WhatsApp-disabled configuration.
+7. In the actual owner Telegram chat, exercise a short one-time reminder, a recurring check-in,
+   an interrupted proposal followed by acceptance, and pause/cancel. Confirm action IDs and
+   provider delivery IDs in the existing inspector. Label synthetic API tests separately from
+   real owner-sent Telegram turns. Retain quiet-hour behavior unless the owner explicitly changes it.
+
+New reminder defaults: one-time minimum 1 second; recurring minimum 60 seconds, five occurrences;
+per-owner reminder caps 12/hour and 50/day. The runtime-secret helper forwards
+`MICA_MIN_CHECKIN_SECONDS`, `MICA_REMINDERS_PER_HOUR` and `MICA_REMINDERS_PER_DAY` when configured.
+Explicit one-time reminders default to their requested instant even during quiet hours; recurring
+check-ins respect quiet hours and enabled-check-in permission. Execution still depends on worker
+availability and polling cadence, so a one-second input is not a one-second delivery guarantee.
+
+**Rollback:** stop workers/writers and take a new backup before considering schema downgrade.
+Downgrade to `0013` deletes new proposal/plan state and associated plan actions/delivery evidence,
+drops new workflow/timestamp fields and normalizes legacy cadence below 15 minutes back to 15.
+Prefer a forward fix on preserved `0014` data when feasible; do not treat downgrade as lossless.
+Keep post-upgrade conversations and records in a recoverable backup. Any runtime restart must
+remain within the current authorized window; further extension requires new owner authorization.

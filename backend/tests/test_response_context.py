@@ -78,10 +78,15 @@ def test_two_calls_capture_distinct_contexts_tools_and_server_formatting(client,
 def test_correction_preserves_historical_capture_without_changing_later_context(client, traced):
     project = save_project(client, traced, description="Original fictional location.")
     old_run = latest_run(client)
-    updated = client.patch(f"/api/threads/{project['id']}", json={
-        "title": project["title"], "description": "Corrected fictional location.",
-        "version": project["version"],
-    }, headers=csrf(client))
+    updated = client.patch(
+        f"/api/threads/{project['id']}",
+        json={
+            "title": project["title"],
+            "description": "Corrected fictional location.",
+            "version": project["version"],
+        },
+        headers=csrf(client),
+    )
     assert updated.status_code == 200
     traced.scripts.append(reply("We now use the corrected location."))
     send(client, "corrected-context", "Continue this project", active_thread_id=project["id"])
@@ -104,16 +109,22 @@ def test_failure_preserves_attempted_request_without_fabricating_output(client, 
     assert data["trace"]["output_origin"] == "application_failed"
 
 
-def test_policy_response_has_no_invented_model_window(client, traced):
+def test_feedback_is_interpreted_in_the_actual_model_window(client, traced):
     project = save_project(client, traced)
     run = latest_run(client)
-    client.post(f"/api/assistance/{run['id']}/feedback", json={
-        "event_id": "feedback-trace", "verdict": "unhelpful",
-    }, headers=csrf(client))
+    client.post(
+        f"/api/assistance/{run['id']}/feedback",
+        json={
+            "event_id": "feedback-trace",
+            "verdict": "unhelpful",
+        },
+        headers=csrf(client),
+    )
+    traced.scripts.append(reply("Let's try a different approach."))
     send(client, "policy-response", "Help with this project", active_thread_id=project["id"])
     data = inspect(client)
-    assert data["trace"]["calls"] == []
-    assert data["trace"]["output_origin"] == "deterministic_policy"
+    assert len(data["trace"]["calls"]) == 1
+    assert data["trace"]["output_origin"] == "model"
     assert data["policy"]["reason"] == "explicit_unhelpful_feedback"
 
 
@@ -178,9 +189,14 @@ def test_idempotent_replay_keeps_original_trace(client, traced):
     traced.scripts.append(reply("The original answer."))
     send(client, "replayed-trace", "Original request")
     first = inspect(client)
-    result = client.post("/api/chat/messages", json={
-        "event_id": "replayed-trace", "content": "Original request",
-    }, headers=csrf(client))
+    result = client.post(
+        "/api/chat/messages",
+        json={
+            "event_id": "replayed-trace",
+            "content": "Original request",
+        },
+        headers=csrf(client),
+    )
     assert result.status_code == 200
     assert inspect(client) == first
     assert len(traced.calls) == 1
@@ -190,20 +206,32 @@ def test_captured_provider_body_matches_wire_and_has_no_transport_secrets(monkey
     from app.tracing import ResponseTrace
 
     gateway = OpenAICompatibleGateway(
-        "https://example.openai.azure.com", "azure-private-test-key", "test-deployment",
-        provider="azure_openai", api_version="2024-10-21", reasoning_effort="none",
+        "https://example.openai.azure.com",
+        "azure-private-test-key",
+        "test-deployment",
+        provider="azure_openai",
+        api_version="2024-10-21",
+        reasoning_effort="none",
     )
     opener = MagicMock()
     response = opener.open.return_value.__enter__.return_value
     response.status = 200
-    response.read.return_value = json.dumps({
-        "model": "served-model", "choices": [{"message": {"role": "assistant", "content": "Hi"}}],
-    }).encode()
+    response.read.return_value = json.dumps(
+        {
+            "model": "served-model",
+            "choices": [{"message": {"role": "assistant", "content": "Hi"}}],
+        }
+    ).encode()
     monkeypatch.setattr("app.gateway.build_opener", lambda *_: opener)
     monkeypatch.setattr(OpenAICompatibleGateway, "complete", OpenAICompatibleGateway._complete)
     trace = ResponseTrace(gateway)
-    trace.complete([{"role": "user", "content": "Hello"}], [],
-                   phase="test", sections=["user_message"], manifest={})
+    trace.complete(
+        [{"role": "user", "content": "Hello"}],
+        [],
+        phase="test",
+        sections=["user_message"],
+        manifest={},
+    )
     captured = trace.data["calls"][0]
     assert captured["request_scope"] == "provider_json_body"
     assert captured["request"] == json.loads(opener.open.call_args.args[0].data)

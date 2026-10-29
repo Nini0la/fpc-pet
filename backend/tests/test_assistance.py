@@ -123,12 +123,17 @@ def captured_context(call):
 
 
 def save_project(client, gateway, title="Lantern", description="A neighborhood audio walk."):
-    gateway.scripts.extend([
-        reply("", tool("save_project", {"title": title, "description": description})),
-        reply("A scripted project response."),
-    ])
+    gateway.scripts.extend(
+        [
+            reply("", tool("save_project", {"title": title, "description": description})),
+            reply("A scripted project response."),
+        ]
+    )
     message = send(
-        client, f"save-{title}", f"Save project {title}: {description}", allow_memory_write=True,
+        client,
+        f"save-{title}",
+        f"Save project {title}: {description}",
+        allow_memory_write=True,
     )
     run = latest_run(client)
     receipt = run["tool_results"][0]
@@ -143,24 +148,41 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
 
     project = save_project(client, gateway)
     idea_text = "Record a story at each street corner."
-    gateway.scripts.extend([
-        reply("", tool("save_idea", {
-            "title": "Corner stories", "description": idea_text, "project_id": project["id"],
-        })),
-        reply("A scripted idea response."),
-    ])
+    gateway.scripts.extend(
+        [
+            reply(
+                "",
+                tool(
+                    "save_idea",
+                    {
+                        "title": "Corner stories",
+                        "description": idea_text,
+                        "project_id": project["id"],
+                    },
+                ),
+            ),
+            reply("A scripted idea response."),
+        ]
+    )
     idea_message = send(
-        client, "save-idea", f"Save this idea: {idea_text}",
-        active_thread_id=project["id"], allow_memory_write=True,
+        client,
+        "save-idea",
+        f"Save this idea: {idea_text}",
+        active_thread_id=project["id"],
+        allow_memory_write=True,
     )
     receipt = latest_run(client)["tool_results"][0]
     assert receipt == {
-        "tool": "save_idea", "status": "saved", "id": receipt["id"],
-        "kind": "idea", "version": 1,
+        "tool": "save_idea",
+        "status": "saved",
+        "id": receipt["id"],
+        "kind": "idea",
+        "version": 1,
     }
     assert f"Saved idea {receipt['id']} (version 1)." in idea_message["content"]
     source_ids = {
-        message["id"] for message in client.get("/api/chat/messages").json()
+        message["id"]
+        for message in client.get("/api/chat/messages").json()
         if message["role"] == "user"
     }
     assert client.post("/api/auth/logout", headers=csrf(client)).status_code == 204
@@ -174,12 +196,16 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
         assert persisted.user_id == user_id
         fresh = build_context(db, user_id, "Continue this", project["id"])
         assert {record["id"] for record in fresh.payload["records"]} == {
-            project["id"], persisted.id,
+            project["id"],
+            persisted.id,
         }
 
-    gateway.scripts.extend([
-        reply("", tool("retrieve_context")), reply(f"Consider the walk [{project['id']}]."),
-    ])
+    gateway.scripts.extend(
+        [
+            reply("", tool("retrieve_context")),
+            reply(f"Consider the walk [{project['id']}]."),
+        ]
+    )
     answer = send(client, "return", "Continue this", active_thread_id=project["id"])
     context = captured_context(gateway.calls[-2])
     records = {record["id"]: record for record in context["records"]}
@@ -219,7 +245,9 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
 
 @pytest.mark.parametrize("correction_method", ["api", "native_tool"])
 def test_correction_versions_audit_and_future_context_excludes_old_text(
-    client, gateway, correction_method,
+    client,
+    gateway,
+    correction_method,
 ):
     import app.main as main
 
@@ -228,41 +256,81 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
     project = save_project(client, gateway, description=old)
     path = f"/api/threads/{project['id']}"
     if correction_method == "api":
-        response = client.patch(path, json={
-            "title": project["title"], "description": new, "version": 1,
-            "epistemic_status": "fact",
-        }, headers=csrf(client))
+        response = client.patch(
+            path,
+            json={
+                "title": project["title"],
+                "description": new,
+                "version": 1,
+                "epistemic_status": "fact",
+            },
+            headers=csrf(client),
+        )
         assert response.status_code == 200
     else:
-        gateway.scripts.extend([
-            reply(f"Previous description: {old}", tool("update_thread", {
-                "id": project["id"], "version": 1, "description": new,
-            })), reply("A scripted correction response."),
-        ])
-        answer = send(client, "correction", f"Correct the description to {new}",
-                      active_thread_id=project["id"], allow_memory_write=True)
+        gateway.scripts.extend(
+            [
+                reply(
+                    f"Previous description: {old}",
+                    tool(
+                        "update_thread",
+                        {
+                            "id": project["id"],
+                            "version": 1,
+                            "description": new,
+                        },
+                    ),
+                ),
+                reply("A scripted correction response."),
+            ]
+        )
+        answer = send(
+            client,
+            "correction",
+            f"Correct the description to {new}",
+            active_thread_id=project["id"],
+            allow_memory_write=True,
+        )
         assert f"Updated project {project['id']} (version 2)." in answer["content"]
         assert old in json.dumps(gateway.calls[-2]["messages"])
         final_call = gateway.calls[-1]
         assert final_call["tools"] == []
         assert old not in json.dumps(final_call["messages"])
-        corrected = next(record for record in captured_context(final_call)["records"]
-                         if record["id"] == project["id"])
+        corrected = next(
+            record
+            for record in captured_context(final_call)["records"]
+            if record["id"] == project["id"]
+        )
         assert (corrected["what"], corrected["version"]) == (new, 2)
-        expected_receipts = [{
-            "tool": "update_thread", "status": "updated", "id": project["id"],
-            "kind": "project", "version": 2,
-        }]
+        expected_receipts = [
+            {
+                "tool": "update_thread",
+                "status": "updated",
+                "id": project["id"],
+                "kind": "project",
+                "version": 2,
+            }
+        ]
         prefix, receipts = final_call["messages"][-1]["content"].split("\n", 1)
         assert prefix == "Server action receipts (data):"
         assert json.loads(receipts) == expected_receipts
         assert latest_run(client)["tool_results"] == expected_receipts
-        assert any(item["id"] == project["id"] and item["version"] == 2
-                   for item in latest_run(client)["context_manifest"]["after_tools"]["included"])
+        assert any(
+            item["id"] == project["id"] and item["version"] == 2
+            for item in latest_run(client)["context_manifest"]["after_tools"]["included"]
+        )
     assert client.get(path).json()["version"] == 2
-    assert client.patch(path, json={
-        "title": "Stale overwrite", "version": 1,
-    }, headers=csrf(client)).status_code == 409
+    assert (
+        client.patch(
+            path,
+            json={
+                "title": "Stale overwrite",
+                "version": 1,
+            },
+            headers=csrf(client),
+        ).status_code
+        == 409
+    )
     revisions = client.get(path + "/revisions").json()["items"]
     assert [revision["version"] for revision in revisions] == [2, 1]
     assert revisions[0]["snapshot"]["description"] == new
@@ -272,8 +340,9 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
     )
     provenance = client.get(f"/api/provenance/{project['id']}").json()
     if correction_method == "api":
-        assert any(link["derivation"] == "user-correction" and link["metadata_only"]
-                   for link in provenance)
+        assert any(
+            link["derivation"] == "user-correction" and link["metadata_only"] for link in provenance
+        )
     assert old not in json.dumps(provenance)
     assert new not in json.dumps(provenance)
     gateway.scripts.append(reply("A scripted current-state suggestion."))
@@ -288,37 +357,45 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
         assert db.scalar(select(func.count()).select_from(ThreadRevision)) == 2
 
 
-def test_explicit_unhelpful_feedback_clarifies_without_model_and_unrelated_is_unaffected(
-    client, gateway,
+def test_explicit_unhelpful_feedback_reaches_model_and_unrelated_is_unaffected(
+    client,
+    gateway,
 ):
     project = save_project(client, gateway)
     other = save_project(client, gateway, "Orchard", "A seasonal planting calendar.")
     gateway.scripts.append(reply("Try a short audio sample."))
     send(client, "first-help", active_thread_id=project["id"])
     prior = latest_run(client)
-    feedback = client.post(f"/api/assistance/{prior['id']}/feedback", json={
-        "event_id": "unhelpful", "verdict": "unhelpful",
-    }, headers=csrf(client))
+    feedback = client.post(
+        f"/api/assistance/{prior['id']}/feedback",
+        json={
+            "event_id": "unhelpful",
+            "verdict": "unhelpful",
+        },
+        headers=csrf(client),
+    )
     assert feedback.status_code == 201
     before = len(gateway.calls)
+    gateway.scripts.append(reply("I won't keep pushing that. We can leave it for now."))
     answer = send(client, "clarify", active_thread_id=project["id"])
-    assert len(gateway.calls) == before
+    assert len(gateway.calls) == before + 1
     assert "won't keep pushing" in answer["content"]
     assert "leave it for now" in answer["content"]
     # Feedback alone does not establish inactivity.
     assert "lack of progress" not in answer["content"]
     run = latest_run(client)
-    assert run["intervention_type"] == "clarify_support"
+    assert run["intervention_type"] == "contextual_help"
     assert run["policy"]["reason"] == "explicit_unhelpful_feedback"
     assert run["execution_status"] == "delivered"
     assert run["observed_outcome"] == "unknown"
-    assert run["usage"] == run["tool_results"] == []
-    assert any(item["id"] == feedback.json()["id"]
-               and item["reason"] == "same_context_feedback"
-               for item in run["context_manifest"]["included"])
+    assert len(run["usage"]) == 1 and run["tool_results"] == []
+    assert any(
+        item["id"] == feedback.json()["id"] and item["reason"] == "same_context_feedback"
+        for item in run["context_manifest"]["included"]
+    )
     gateway.scripts.append(reply("Try one planting bed."))
     send(client, "unrelated", active_thread_id=other["id"])
-    assert len(gateway.calls) == before + 1
+    assert len(gateway.calls) == before + 2
     assert captured_context(gateway.calls[-1])["feedback"] is None
     assert latest_run(client)["intervention_type"] == "contextual_help"
     assert client.get("/api/assistance").json()["growth"] == []
@@ -343,17 +420,23 @@ def test_unknown_memory_has_honesty_instructions_and_no_fabricated_evidence(clie
     assert client.get("/api/threads").json() == []
 
 
-@pytest.mark.parametrize(("scenario", "reason"), [
-    ("unknown_tool", "unknown_tool"),
-    ("permission_false", "write_permission_required"),
-    ("permission_omitted", "write_permission_required"),
-    ("foreign_project", "unknown_project"),
-    ("foreign_update", "unknown_record"),
-    ("injected_tenant", "invalid_arguments"),
-    ("sensitive_source", "sensitive_source"),
-])
+@pytest.mark.parametrize(
+    ("scenario", "reason"),
+    [
+        ("unknown_tool", "unknown_tool"),
+        ("permission_false", "write_permission_required"),
+        ("permission_omitted", "write_permission_required"),
+        ("foreign_project", "unknown_project"),
+        ("foreign_update", "unknown_record"),
+        ("injected_tenant", "invalid_arguments"),
+        ("sensitive_source", "sensitive_source"),
+    ],
+)
 def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
-    client, gateway, scenario, reason,
+    client,
+    gateway,
+    scenario,
+    reason,
 ):
     import app.main as main
 
@@ -361,9 +444,13 @@ def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
         foreign_user = User(username="foreign-owner")
         db.add(foreign_user)
         db.flush()
-        foreign = Thread(user_id=foreign_user.id, title="Private foreign project",
-                         kind="project", description="Private foreign description",
-                         derivation="test")
+        foreign = Thread(
+            user_id=foreign_user.id,
+            title="Private foreign project",
+            kind="project",
+            description="Private foreign description",
+            derivation="test",
+        )
         db.add(foreign)
         db.flush()
         foreign_id, foreign_user_id = foreign.id, foreign_user.id
@@ -393,16 +480,20 @@ def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
     assert f"Server receipts: Action rejected: {reason}." in answer["content"]
     run = latest_run(client)
     assert run["execution_status"] == "rejected"
-    assert run["tool_results"] == [{
-        "tool": "unknown" if scenario == "unknown_tool" else name,
-        "status": "rejected", "reason": reason,
-    }]
+    assert run["tool_results"] == [
+        {
+            "tool": "unknown" if scenario == "unknown_tool" else name,
+            "status": "rejected",
+            "reason": reason,
+        }
+    ]
     assert len(gateway.calls) == 1
     assert len(run["usage"]) == 1
     if scenario.startswith("permission_"):
         assert [schema["function"]["name"] for schema in gateway.calls[0]["tools"]] == [
             "get_commitments",
             "retrieve_context",
+            "propose_action",
         ]
         assert run["policy"]["allow_memory_write"] is False
     assert client.get("/api/threads").json() == []
@@ -419,10 +510,19 @@ def test_three_tool_calls_reject_entire_batch_before_execution(client, gateway, 
 
     execute = Mock(wraps=assistance.execute_tool)
     monkeypatch.setattr(assistance, "execute_tool", execute)
-    gateway.scripts.append(reply("", *[
-        tool("save_project", {"title": f"Project {index}", "description": "A draft."},
-             call_id=f"call-{index}") for index in range(3)
-    ]))
+    gateway.scripts.append(
+        reply(
+            "",
+            *[
+                tool(
+                    "save_project",
+                    {"title": f"Project {index}", "description": "A draft."},
+                    call_id=f"call-{index}",
+                )
+                for index in range(3)
+            ],
+        )
+    )
     answer = send(client, "too-many", "Save three projects.", allow_memory_write=True)
     assert answer["content"] == (
         "The requested tool-call limit was exceeded. No tool actions were executed."
@@ -441,10 +541,12 @@ def test_second_model_tool_calls_are_not_executed(client, gateway, monkeypatch):
 
     execute = Mock(wraps=assistance.execute_tool)
     monkeypatch.setattr(assistance, "execute_tool", execute)
-    gateway.scripts.extend([
-        reply("", tool("retrieve_context")),
-        reply("", tool("save_project", {"title": "Never saved", "description": "A draft."})),
-    ])
+    gateway.scripts.extend(
+        [
+            reply("", tool("retrieve_context")),
+            reply("", tool("save_project", {"title": "Never saved", "description": "A draft."})),
+        ]
+    )
     answer = send(client, "second-tool-round", allow_memory_write=True)
     assert "Further tool execution was stopped at the operation limit." in answer["content"]
     assert execute.call_count == 1
@@ -460,14 +562,25 @@ def test_second_model_tool_calls_are_not_executed(client, gateway, monkeypatch):
 
 @pytest.mark.parametrize("after_save", [False, True])
 def test_provider_outage_records_safe_failure_usage_and_completed_receipts(
-    client, gateway, after_save,
+    client,
+    gateway,
+    after_save,
 ):
     import app.main as main
 
     if after_save:
-        gateway.scripts.append(reply("", tool("save_project", {
-            "title": "Outage project", "description": "A durable draft.",
-        })))
+        gateway.scripts.append(
+            reply(
+                "",
+                tool(
+                    "save_project",
+                    {
+                        "title": "Outage project",
+                        "description": "A durable draft.",
+                    },
+                ),
+            )
+        )
     gateway.scripts.append(GatewayError("unavailable"))
     answer = send(client, "outage", "Save a durable draft.", allow_memory_write=True)
     assert answer["content"].startswith(
@@ -487,8 +600,11 @@ def test_provider_outage_records_safe_failure_usage_and_completed_receipts(
         assert f"Saved project {receipt['id']} (version 1)." in answer["content"]
         assert client.get(f"/api/threads/{receipt['id']}").json()["title"] == "Outage project"
         assert run["usage"][0] == {
-            "model": "scripted-test-model", "input_tokens": 41, "output_tokens": 17,
-            "latency_ms": 3, "cost_usd": None,
+            "model": "scripted-test-model",
+            "input_tokens": 41,
+            "output_tokens": 17,
+            "latency_ms": 3,
+            "cost_usd": None,
         }
     else:
         assert run["tool_results"] == []
@@ -506,9 +622,17 @@ def test_context_and_assistance_are_tenant_isolated(client, gateway):
     project = save_project(client, gateway, "Private lantern", "Unshared rooftop recordings.")
     owner_id = client.get("/api/auth/me").json()["id"]
     run = latest_run(client)
-    assert client.post(f"/api/assistance/{run['id']}/feedback", json={
-        "event_id": "private-feedback", "verdict": "helpful",
-    }, headers=csrf(client)).status_code == 201
+    assert (
+        client.post(
+            f"/api/assistance/{run['id']}/feedback",
+            json={
+                "event_id": "private-feedback",
+                "verdict": "helpful",
+            },
+            headers=csrf(client),
+        ).status_code
+        == 201
+    )
     with main.SessionLocal() as db:
         private_ids = {owner_id, project["id"]}
         for model in (Message, ProvenanceLink, AssistanceRun, AssistanceFeedback, GrowthEvent):
@@ -516,12 +640,23 @@ def test_context_and_assistance_are_tenant_isolated(client, gateway):
     assert client.post("/api/auth/logout", headers=csrf(client)).status_code == 204
     assert login(client, username="other").status_code == 200
     assert client.get("/api/assistance").json() == {
-        "items": [], "growth": [], "has_more": False,
+        "items": [],
+        "growth": [],
+        "has_more": False,
     }
     before = len(gateway.calls)
-    assert client.post("/api/chat/messages", json={
-        "event_id": "foreign-selected", "content": "Continue", "active_thread_id": project["id"],
-    }, headers=csrf(client)).status_code == 404
+    assert (
+        client.post(
+            "/api/chat/messages",
+            json={
+                "event_id": "foreign-selected",
+                "content": "Continue",
+                "active_thread_id": project["id"],
+            },
+            headers=csrf(client),
+        ).status_code
+        == 404
+    )
     assert len(gateway.calls) == before
     gateway.scripts.append(reply("I do not have that recorded."))
     send(client, "foreign-query", "Private lantern rooftop recordings")
@@ -535,12 +670,20 @@ def test_context_and_assistance_are_tenant_isolated(client, gateway):
     assert client.get("/api/threads").json() == []
 
 
-@pytest.mark.parametrize(("verdict", "outcome", "dimension", "event_type"), [
-    ("helpful", "user_confirmed_helpful", "judgement", "helpfulness_reported"),
-    ("completed", "user_reported_completed", "human_empowerment", "outcome_reported"),
-])
+@pytest.mark.parametrize(
+    ("verdict", "outcome", "dimension", "event_type"),
+    [
+        ("helpful", "user_confirmed_helpful", "judgement", "helpfulness_reported"),
+        ("completed", "user_reported_completed", "human_empowerment", "outcome_reported"),
+    ],
+)
 def test_feedback_is_a_reported_milestone_not_demonstrated_improvement(
-    client, gateway, verdict, outcome, dimension, event_type,
+    client,
+    gateway,
+    verdict,
+    outcome,
+    dimension,
+    event_type,
 ):
     gateway.scripts.append(reply("A scripted suggestion, not measured improvement."))
     send(client, "suggestion")
@@ -571,7 +714,10 @@ def test_feedback_is_a_reported_milestone_not_demonstrated_improvement(
 
 @pytest.mark.parametrize("allow_write", [False, True])
 def test_event_retry_never_repeats_model_or_tool_and_changed_authorization_conflicts(
-    client, gateway, monkeypatch, allow_write,
+    client,
+    gateway,
+    monkeypatch,
+    allow_write,
 ):
     import app.assistance as assistance
     import app.main as main
@@ -583,7 +729,9 @@ def test_event_retry_never_repeats_model_or_tool_and_changed_authorization_confl
         call = tool("retrieve_context")
     gateway.scripts.extend([reply("", call), reply("A scripted final response.")])
     payload = {
-        "event_id": "retry", "content": "Develop a draft.", "allow_memory_write": allow_write,
+        "event_id": "retry",
+        "content": "Develop a draft.",
+        "allow_memory_write": allow_write,
     }
     assert client.post("/api/chat/messages", json=payload, headers=csrf(client)).status_code == 201
     messages_before = client.get("/api/chat/messages").json()
@@ -592,9 +740,14 @@ def test_event_retry_never_repeats_model_or_tool_and_changed_authorization_confl
         replay = client.post("/api/chat/messages", json=payload, headers=csrf(client))
         assert replay.status_code == 200
         assert replay.json()["idempotent"] is True
-    changed = client.post("/api/chat/messages", json={
-        **payload, "allow_memory_write": not allow_write,
-    }, headers=csrf(client))
+    changed = client.post(
+        "/api/chat/messages",
+        json={
+            **payload,
+            "allow_memory_write": not allow_write,
+        },
+        headers=csrf(client),
+    )
     assert changed.status_code == 409
     assert "Idempotency key" in changed.json()["detail"]
     assert len(gateway.calls) == 2
@@ -603,28 +756,46 @@ def test_event_retry_never_repeats_model_or_tool_and_changed_authorization_confl
     assert latest_run(client) == run_before
     with main.SessionLocal() as db:
         for model, expected in (
-            (AgentEvent, 1), (AssistanceRun, 1), (Message, 2),
-            (Thread, int(allow_write)), (ThreadRevision, int(allow_write)),
+            (AgentEvent, 1),
+            (AssistanceRun, 1),
+            (Message, 2),
+            (Thread, int(allow_write)),
+            (ThreadRevision, int(allow_write)),
             (ProvenanceLink, int(allow_write)),
         ):
             assert db.scalar(select(func.count()).select_from(model)) == expected
 
 
 def test_unknown_active_context_never_calls_model(client, gateway):
-    response = client.post("/api/chat/messages", json={
-        "event_id": "unknown-active", "content": "Continue this",
-        "active_thread_id": str(uuid4()),
-    }, headers=csrf(client))
+    response = client.post(
+        "/api/chat/messages",
+        json={
+            "event_id": "unknown-active",
+            "content": "Continue this",
+            "active_thread_id": str(uuid4()),
+        },
+        headers=csrf(client),
+    )
     assert response.status_code == 404
     assert gateway.calls == []
     assert client.get("/api/assistance").json()["items"] == []
 
 
-@pytest.mark.parametrize(("gateway_enabled", "allow_write"), [
-    (True, False), (True, True), (False, False),
-], ids=["gateway-no-permission", "gateway-authorized", "legacy-deterministic"])
+@pytest.mark.parametrize(
+    ("gateway_enabled", "allow_write"),
+    [
+        (True, False),
+        (True, True),
+        (False, False),
+    ],
+    ids=["gateway-no-permission", "gateway-authorized", "legacy-deterministic"],
+)
 def test_pending_reflection_respects_gateway_write_permission(
-    client, gateway, monkeypatch, gateway_enabled, allow_write,
+    client,
+    gateway,
+    monkeypatch,
+    gateway_enabled,
+    allow_write,
 ):
     import app.main as main
 
@@ -632,14 +803,23 @@ def test_pending_reflection_respects_gateway_write_permission(
         monkeypatch.setattr(main.runtime, "gateway", None)
     user_id = client.get("/api/auth/me").json()["id"]
     with main.SessionLocal.begin() as db:
-        existing = Commitment(user_id=user_id, title="prepare exhibition", confidence=1,
-                              derivation="test")
+        existing = Commitment(
+            user_id=user_id, title="prepare exhibition", confidence=1, derivation="test"
+        )
         db.add(existing)
         db.flush()
         existing_id = existing.id
-    assert client.post("/api/events/scheduled", json={
-        "event_id": "evening", "kind": "evening_reflection",
-    }, headers=csrf(client)).status_code == 202
+    assert (
+        client.post(
+            "/api/events/scheduled",
+            json={
+                "event_id": "evening",
+                "kind": "evening_reflection",
+            },
+            headers=csrf(client),
+        ).status_code
+        == 202
+    )
     with main.SessionLocal() as db:
         prompt_id = db.scalar(select(ReflectionPrompt.id))
         episode_count = db.scalar(select(func.count()).select_from(Episode))
@@ -647,6 +827,22 @@ def test_pending_reflection_respects_gateway_write_permission(
     permitted = not gateway_enabled or allow_write
     if not permitted:
         gateway.scripts.append(reply("We can discuss this without saving it."))
+    elif gateway_enabled:
+        gateway.scripts.append(
+            reply(
+                "",
+                tool(
+                    "manage_workflow",
+                    {
+                        "kind": "reflection",
+                        "id": prompt_id,
+                        "version": 1,
+                        "action": "respond",
+                        "response_text": "I've saved your reflection. What stood out most?",
+                    },
+                ),
+            )
+        )
     content = (
         "I finished prepare exhibition. I need to book the gallery. "
         "I'm considering a sculpture garden."
@@ -656,15 +852,27 @@ def test_pending_reflection_respects_gateway_write_permission(
         prompt = db.get(ReflectionPrompt, prompt_id)
         existing = db.get(Commitment, existing_id)
         journal = db.scalar(select(JournalEntry))
-        if permitted:
+        if permitted and gateway_enabled:
+            assert prompt.status == "completed"
+            assert journal.original_content == content
+            # Structured changes now need explicit model-selected tools, not clause regexes.
+            assert existing.state == "open" and existing.version == 1
+            assert db.scalar(select(func.count()).select_from(Commitment)) == 1
+            assert db.scalar(select(func.count()).select_from(Thread)) == 0
+        elif permitted:
             assert prompt.status == "completed"
             assert prompt.journal_entry_id == journal.id
             assert journal.original_content == content
             assert existing.state == "complete"
             assert existing.version == 2
-            assert db.scalar(select(Commitment.title).where(
-                Commitment.id != existing_id,
-            )) == "book the gallery"
+            assert (
+                db.scalar(
+                    select(Commitment.title).where(
+                        Commitment.id != existing_id,
+                    )
+                )
+                == "book the gallery"
+            )
             assert db.scalar(select(Thread.title)) == "a sculpture garden"
             assert journal.structured_state["completed_ids"] == [existing_id]
             assert len(journal.structured_state["new_commitment_ids"]) == 1
@@ -680,20 +888,55 @@ def test_pending_reflection_respects_gateway_write_permission(
             assert db.scalar(select(func.count()).select_from(Episode)) == episode_count
             assert db.scalar(select(func.count()).select_from(ProvenanceLink)) == provenance_count
             assert latest_run(client)["policy"]["allow_memory_write"] is False
-    assert len(gateway.calls) == (0 if permitted else 1)
+    assert len(gateway.calls) == (1 if gateway_enabled else 0)
 
 
-@pytest.mark.parametrize(("gateway_enabled", "allow_write"), [
-    (True, False), (True, True), (False, False),
-], ids=["gateway-no-permission", "gateway-authorized", "legacy-deterministic"])
+@pytest.mark.parametrize(
+    ("gateway_enabled", "allow_write"),
+    [
+        (True, False),
+        (True, True),
+        (False, False),
+    ],
+    ids=["gateway-no-permission", "gateway-authorized", "legacy-deterministic"],
+)
 def test_pending_vocabulary_attempt_respects_gateway_write_permission(
-    client, gateway, monkeypatch, gateway_enabled, allow_write,
+    client,
+    gateway,
+    monkeypatch,
+    gateway_enabled,
+    allow_write,
 ):
     import app.main as main
 
-    assert client.post("/api/events/scheduled", json={
-        "event_id": "morning", "kind": "morning_briefing",
-    }, headers=csrf(client)).status_code == 202
+    assert (
+        client.post(
+            "/api/events/scheduled",
+            json={
+                "event_id": "morning",
+                "kind": "morning_briefing",
+            },
+            headers=csrf(client),
+        ).status_code
+        == 202
+    )
+    if not gateway_enabled:
+        monkeypatch.setattr(main.runtime, "gateway", None)
+    else:
+        gateway.scripts.append(
+            reply(
+                "",
+                tool(
+                    "manage_workflow",
+                    {
+                        "kind": "vocabulary",
+                        "action": "start",
+                        "word": "inchoate",
+                        "response_text": "What does inchoate mean?",
+                    },
+                ),
+            )
+        )
     send(client, "request-review", "review inchoate", allow_memory_write=True)
     with main.SessionLocal() as db:
         attempt = db.scalar(select(VocabularyAttempt))
@@ -701,16 +944,39 @@ def test_pending_vocabulary_attempt_respects_gateway_write_permission(
         item = db.get(VocabularyItem, attempt.vocabulary_item_id)
         attempt_id, item_id = attempt.id, item.id
         answer_text = item.definition + "; sentence: The inchoate plan needs more detail."
-        attempt_before = {column.name: deepcopy(getattr(attempt, column.name))
-                          for column in VocabularyAttempt.__table__.columns}
-        item_before = {column.name: deepcopy(getattr(item, column.name))
-                       for column in VocabularyItem.__table__.columns}
-    assert gateway.calls == []
+        attempt_before = {
+            column.name: deepcopy(getattr(attempt, column.name))
+            for column in VocabularyAttempt.__table__.columns
+        }
+        item_before = {
+            column.name: deepcopy(getattr(item, column.name))
+            for column in VocabularyItem.__table__.columns
+        }
+    assert len(gateway.calls) == (1 if gateway_enabled else 0)
+    gateway.calls.clear()
     if not gateway_enabled:
         monkeypatch.setattr(main.runtime, "gateway", None)
     permitted = not gateway_enabled or allow_write
     if not permitted:
         gateway.scripts.append(reply("We can discuss the word without recording an attempt."))
+    elif gateway_enabled:
+        gateway.scripts.append(
+            reply(
+                "",
+                tool(
+                    "manage_workflow",
+                    {
+                        "kind": "vocabulary",
+                        "id": attempt_id,
+                        "version": 1,
+                        "action": "respond",
+                        "grade": "correct",
+                        "sentence": "The inchoate plan needs more detail.",
+                        "response_text": "That's right; your example fits.",
+                    },
+                ),
+            )
+        )
     send(client, "vocabulary-answer", answer_text, allow_memory_write=allow_write)
     with main.SessionLocal() as db:
         attempt = db.get(VocabularyAttempt, attempt_id)
@@ -728,13 +994,16 @@ def test_pending_vocabulary_attempt_respects_gateway_write_permission(
             assert {key: getattr(attempt, key) for key in attempt_before} == attempt_before
             assert {key: getattr(item, key) for key in item_before} == item_before
             assert latest_run(client)["policy"]["allow_memory_write"] is False
-    assert len(gateway.calls) == (0 if permitted else 1)
+    assert len(gateway.calls) == (1 if gateway_enabled else 0)
 
 
 @pytest.mark.parametrize("name", ["save_idea", "create_commitment"])
 @pytest.mark.parametrize("project_id", ["", " \t\n "], ids=["empty", "whitespace"])
 def test_blank_project_id_is_rejected_with_receipt_without_writes(
-    client, gateway, name, project_id,
+    client,
+    gateway,
+    name,
+    project_id,
 ):
     import app.main as main
 
@@ -746,9 +1015,13 @@ def test_blank_project_id_is_rejected_with_receipt_without_writes(
     assert "Server receipts: Action rejected: invalid_arguments." in answer["content"]
     run = latest_run(client)
     assert run["execution_status"] == "rejected"
-    assert run["tool_results"] == [{
-        "tool": name, "status": "rejected", "reason": "invalid_arguments",
-    }]
+    assert run["tool_results"] == [
+        {
+            "tool": name,
+            "status": "rejected",
+            "reason": "invalid_arguments",
+        }
+    ]
     assert len(gateway.calls) == 1
     with main.SessionLocal() as db:
         for model in (Thread, Commitment, ThreadRevision, ProvenanceLink):
@@ -757,7 +1030,10 @@ def test_blank_project_id_is_rejected_with_receipt_without_writes(
 
 @pytest.mark.parametrize("operation", ["correct", "delete"])
 def test_journal_mutation_invalidates_derived_episode_and_old_transcript_context(
-    client, gateway, monkeypatch, operation,
+    client,
+    gateway,
+    monkeypatch,
+    operation,
 ):
     import app.main as main
     import app.persistence as persistence
@@ -768,17 +1044,35 @@ def test_journal_mutation_invalidates_derived_episode_and_old_transcript_context
     user_id = client.get("/api/auth/me").json()["id"]
     old = "Obsolete harbor route won approval."
     new = "Current harbor route needs review."
-    assert client.post("/api/events/scheduled", json={
-        "event_id": "journal-evening", "kind": "evening_reflection",
-    }, headers=csrf(client)).status_code == 202
+    assert (
+        client.post(
+            "/api/events/scheduled",
+            json={
+                "event_id": "journal-evening",
+                "kind": "evening_reflection",
+            },
+            headers=csrf(client),
+        ).status_code
+        == 202
+    )
+    # Seed a legacy journal/derived episode to verify old persisted data remains correctable.
+    monkeypatch.setattr(main.runtime, "gateway", None)
     send(client, "journal-capture", f"Outcome: {old}", allow_memory_write=True)
+    monkeypatch.setattr(main.runtime, "gateway", gateway)
     with main.SessionLocal() as db:
         journal = db.scalar(select(JournalEntry))
         journal_id = journal.id
-        derived = db.scalar(select(Episode).join(
-            ProvenanceLink, ProvenanceLink.target_id == Episode.id,
-        ).where(ProvenanceLink.source_type == "journal_entry",
-                ProvenanceLink.source_id == journal_id))
+        derived = db.scalar(
+            select(Episode)
+            .join(
+                ProvenanceLink,
+                ProvenanceLink.target_id == Episode.id,
+            )
+            .where(
+                ProvenanceLink.source_type == "journal_entry",
+                ProvenanceLink.source_id == journal_id,
+            )
+        )
         assert derived is not None
         derived_id = derived.id
         assert old.rstrip(".") in derived.summary
@@ -833,7 +1127,9 @@ def test_journal_mutation_invalidates_derived_episode_and_old_transcript_context
 
 
 def test_atomic_update_context_reset_is_tenant_scoped_and_transactional(
-    client, gateway, monkeypatch,
+    client,
+    gateway,
+    monkeypatch,
 ):
     import app.main as main
     import app.persistence as persistence
@@ -851,25 +1147,65 @@ def test_atomic_update_context_reset_is_tenant_scoped_and_transactional(
         db.flush()
         thread_id = thread.id
     with main.SessionLocal() as db:
-        assert atomic_update(db, Thread, thread_id, user_id, 2, {
-            "title": "Stale",
-        }) is MutationResult.CONFLICT
-        assert atomic_update(db, Thread, thread_id, other_id, 1, {
-            "title": "Foreign",
-        }) is MutationResult.NOT_FOUND
+        assert (
+            atomic_update(
+                db,
+                Thread,
+                thread_id,
+                user_id,
+                2,
+                {
+                    "title": "Stale",
+                },
+            )
+            is MutationResult.CONFLICT
+        )
+        assert (
+            atomic_update(
+                db,
+                Thread,
+                thread_id,
+                other_id,
+                1,
+                {
+                    "title": "Foreign",
+                },
+            )
+            is MutationResult.NOT_FOUND
+        )
         assert db.get(User, user_id).context_reset_at is None
         assert db.get(User, other_id).context_reset_at is None
-        assert atomic_update(db, Thread, thread_id, user_id, 1, {
-            "title": "Rolled back",
-        }) is MutationResult.UPDATED
+        assert (
+            atomic_update(
+                db,
+                Thread,
+                thread_id,
+                user_id,
+                1,
+                {
+                    "title": "Rolled back",
+                },
+            )
+            is MutationResult.UPDATED
+        )
         assert db.get(User, user_id).context_reset_at.replace(tzinfo=timezone.utc) == reset_at
         db.rollback()
     with main.SessionLocal() as db:
         assert db.get(User, user_id).context_reset_at is None
         assert db.get(Thread, thread_id).title == "Before reset"
-        assert atomic_update(db, Thread, thread_id, user_id, 1, {
-            "title": "After reset",
-        }) is MutationResult.UPDATED
+        assert (
+            atomic_update(
+                db,
+                Thread,
+                thread_id,
+                user_id,
+                1,
+                {
+                    "title": "After reset",
+                },
+            )
+            is MutationResult.UPDATED
+        )
         db.commit()
     with main.SessionLocal() as db:
         assert db.get(User, user_id).context_reset_at.replace(tzinfo=timezone.utc) == reset_at

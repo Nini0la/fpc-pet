@@ -4,7 +4,6 @@ import base64
 import hashlib
 import hmac
 import json
-import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -15,7 +14,6 @@ from sqlalchemy.orm import Session
 
 from .assistance import contextual_reply
 from .clock import Clock, SystemClock
-from .commitments import explicit_followup, lifecycle_message
 from .daily import EveningReflectionSkill, MorningBriefingSkill
 from .gateway import Gateway
 from .history import SharedHistoryRecallSkill
@@ -25,6 +23,7 @@ from .models import (
     ConversationSession,
     Episode,
     ProvenanceLink,
+    ReflectionPrompt,
     SkillRun,
     Thread,
     User,
@@ -54,6 +53,7 @@ class RuntimeEvent:
     active_thread_id: str | None = None
     allow_memory_write: bool = False
     scheduled_action_id: str | None = None
+    message_at: datetime | None = None
 
 
 class IdempotencyConflict(Exception):
@@ -229,42 +229,6 @@ class AgentRuntime:
         transition_reply: str | None = None
         autonomy_result: dict[str, Any] = {}
         if event.kind == "user_message" and event.content and event.conversation_id:
-            conversation_request = self.gateway is not None and (
-                explicit_followup(event.content)
-                or event.content.rstrip().endswith("?")
-                or bool(
-                    re.fullmatch(
-                        r"(?:hi|hello|hey)(?:[ ,]+[\w'-]+)?[!.]*", event.content.strip(), re.I
-                    )
-                )
-            )
-            is_lifecycle = self.gateway is not None and (
-                lifecycle_message(event.content) or conversation_request
-            )
-            plan_correction = conversation_request or (
-                is_lifecycle
-                and any(
-                    word in event.content.casefold()
-                    for word in (
-                        "deadline",
-                        "unavailable",
-                        "available",
-                        "availability",
-                        "plan",
-                        "next action",
-                        "blocked periods",
-                        "follow-ups",
-                        "check-ins",
-                        "constraints",
-                        "blocker",
-                        "pause",
-                        "cancel",
-                        "resume",
-                        "reopen",
-                        "actually",
-                    )
-                )
-            )
             user_message = append_message(
                 db,
                 user_id=user_id,
@@ -272,20 +236,16 @@ class AgentRuntime:
                 role="user",
                 actor="user",
                 content=event.content,
-                created_at=self.clock.now(),
+                created_at=event.message_at or self.clock.now(),
             )
-            reflection_handled = (
-                (self.gateway is None or event.allow_memory_write)
-                and not plan_correction
-                and self.evening.capture_if_pending(
-                    db,
-                    user_id,
-                    recorded.id,
-                    user_message.id,
-                    event.content,
-                    self.clock.now(),
-                    self.history.allows_episodic_content(event.content),
-                )
+            reflection_handled = self.gateway is None and self.evening.capture_if_pending(
+                db,
+                user_id,
+                recorded.id,
+                user_message.id,
+                event.content,
+                self.clock.now(),
+                self.history.allows_episodic_content(event.content),
             )
             if reflection_handled:
                 vocabulary_prompt = self.vocabulary.prompt(
@@ -293,7 +253,7 @@ class AgentRuntime:
                 )
                 if vocabulary_prompt:
                     vocabulary_reply = REFLECTION_ACKNOWLEDGEMENT + " " + vocabulary_prompt
-            elif (self.gateway is None or event.allow_memory_write) and not is_lifecycle:
+            elif self.gateway is None:
                 vocabulary_handled, vocabulary_reply = self.vocabulary.capture_if_pending(
                     db, user_id, recorded.id, event.content, self.clock.now()
                 )
@@ -334,7 +294,7 @@ class AgentRuntime:
                         if vocabulary_reply is not None:
                             break
             recalling_history = self.gateway is None and self.history.matches(event.content)
-            episode_actor = self.history.actor_for(event.content)
+            episode_actor = self.history.actor_for(event.content) if self.gateway is None else None
             if self.gateway is None and not recalling_history and episode_actor is not None:
                 episode = Episode(
                     user_id=user_id,
@@ -644,6 +604,14 @@ class AgentRuntime:
             )
             if assistance_run is not None:
                 assistance_run.message_id = assistant_message.id
+                for prompt in db.scalars(
+                    select(ReflectionPrompt).where(
+                        ReflectionPrompt.user_id == user_id,
+                        ReflectionPrompt.source_event_id == recorded.id,
+                        ReflectionPrompt.message_id.is_(None),
+                    )
+                ):
+                    prompt.message_id = assistant_message.id
         elif event.kind == "autonomy_wake" and event.scheduled_action_id:
             from .autonomy import perform
 

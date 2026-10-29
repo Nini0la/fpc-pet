@@ -18,6 +18,21 @@ class MutationResult(Enum):
     NOT_FOUND = "not_found"
 
 
+def invalidate_journal_episodes(db: Session, user_id: str, journal_id: str) -> None:
+    from .models import Episode, ProvenanceLink
+
+    derived = select(ProvenanceLink.target_id).where(
+        ProvenanceLink.user_id == user_id,
+        ProvenanceLink.source_type == "journal_entry",
+        ProvenanceLink.source_id == journal_id,
+    )
+    db.execute(
+        update(Episode)
+        .where(Episode.user_id == user_id, Episode.id.in_(derived))
+        .values(summary="[source corrected or deleted]", deleted=True, version=Episode.version + 1)
+    )
+
+
 def get_or_create_conversation(
     db: Session, user_id: str, *, created_at: datetime | None = None
 ) -> ConversationSession:
@@ -133,6 +148,21 @@ def atomic_update(
             .values(context_reset_at=values.get("last_touched_at") or utcnow())
         )
         if values.get("deleted") is True:
+            from .models import ConversationProposal
+
+            db.execute(
+                update(ConversationProposal)
+                .where(ConversationProposal.user_id == user_id)
+                .values(arguments={}, title="[cleared by memory deletion]")
+            )
+            db.execute(
+                update(ConversationProposal)
+                .where(
+                    ConversationProposal.user_id == user_id,
+                    ConversationProposal.state.in_(["proposed", "needs_clarification", "paused"]),
+                )
+                .values(state="cancelled", version=ConversationProposal.version + 1)
+            )
             # Raw prompts can contain source chat as well as derived records; purge all
             # of this tenant's snapshots rather than risk incomplete dependency matching.
             db.execute(

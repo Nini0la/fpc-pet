@@ -23,6 +23,7 @@ from .agent import AgentRuntime, ConcurrentMutation, IdempotencyConflict, Runtim
 from .assistance import snapshot_thread
 from .autonomy_api import autonomy_router, cancel_for_preferences
 from .clock import FakeClock
+from .continuation_api import continuation_router
 from .daily import POLICY_VERSION, current_power_list, local_date_for
 from .gateway import GatewayError, OpenAICompatibleGateway
 from .models import (
@@ -43,6 +44,7 @@ from .models import (
     ResponsibilityEvent,
     ScheduledAction,
     Session,
+    TelegramDelivery,
     Thread,
     ThreadRevision,
     User,
@@ -51,7 +53,12 @@ from .models import (
     utcnow,
 )
 from .operations_api import operations_router
-from .persistence import MutationResult, atomic_update, get_or_create_conversation
+from .persistence import (
+    MutationResult,
+    atomic_update,
+    get_or_create_conversation,
+    invalidate_journal_episodes,
+)
 from .prospective import urgency_for
 from .security import resolve_login_username
 from .telegram_api import telegram_router
@@ -564,6 +571,17 @@ def response_context(
     )
     response.headers["Cache-Control"] = "no-store"
     response.headers["Vary"] = "Cookie"
+    action = db.scalar(
+        select(ScheduledAction).where(
+            ScheduledAction.user_id == user.id, ScheduledAction.message_id == message.id
+        )
+    )
+    deliveries = db.scalars(
+        select(TelegramDelivery)
+        .where(TelegramDelivery.user_id == user.id, TelegramDelivery.message_id == message.id)
+        .order_by(TelegramDelivery.created_at)
+        .limit(20)
+    ).all()
     return {
         "message_id": message.id,
         "response": message.content,
@@ -573,6 +591,33 @@ def response_context(
         "run_id": run.id if run else None,
         "policy": run.policy if run else None,
         "intervention_type": run.intervention_type if run else None,
+        "execution_status": run.execution_status if run else None,
+        "event_id": run.event_id if run else None,
+        "execution_evidence": {
+            "action": {
+                "id": action.id,
+                "kind": action.kind,
+                "state": action.state,
+                "reason": action.reason,
+                "event_id": action.source_event_id,
+                "attempts": action.attempt_count,
+                "decision": action.decision,
+            }
+            if action
+            else None,
+            "deliveries": [
+                {
+                    "id": row.id,
+                    "state": row.state,
+                    "reason": row.reason,
+                    "attempts": row.attempts,
+                    "provider_message_id": row.provider_message_id,
+                }
+                for row in deliveries
+            ],
+        }
+        if action or deliveries
+        else None,
     }
 
 
@@ -1280,23 +1325,6 @@ def delete_journal(
     db.commit()
 
 
-def invalidate_journal_episodes(db: DBSession, user_id: str, journal_id: str) -> None:
-    derived = select(ProvenanceLink.target_id).where(
-        ProvenanceLink.user_id == user_id,
-        ProvenanceLink.source_type == "journal_entry",
-        ProvenanceLink.source_id == journal_id,
-    )
-    db.execute(
-        update(Episode)
-        .where(Episode.user_id == user_id, Episode.id.in_(derived))
-        .values(
-            summary="[source corrected or deleted]",
-            deleted=True,
-            version=Episode.version + 1,
-        )
-    )
-
-
 @app.get("/api/history/recall")
 def recall(
     response: Response,
@@ -1884,3 +1912,4 @@ def scheduled(
 app.include_router(operations_router(db_session, current_user, mutation_guard, runtime))
 app.include_router(autonomy_router(db_session, current_user, mutation_guard, runtime))
 app.include_router(telegram_router(db_session, current_user, mutation_guard, runtime))
+app.include_router(continuation_router(db_session, current_user, mutation_guard, runtime))

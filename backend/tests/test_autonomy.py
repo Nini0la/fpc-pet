@@ -554,6 +554,7 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
                 {
                     "id": item["id"],
                     "deadline_text": "Friday at 6pm",
+                    "response_text": "I've moved the selected deadline to Friday.",
                 },
             ),
         )
@@ -561,7 +562,7 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
     answer = send(
         pg_client, "unnamed-correction", "The deadline is Friday at 6pm.", allow_memory_write=True
     )
-    assert "ambiguous_reference" in answer["content"]
+    assert "Updated commitment" in answer["content"]
     with main.SessionLocal.begin() as db:
         owner = db.scalar(select(User))
         db.add(Commitment(user_id=owner.id, title=item["title"], confidence=1, derivation="test"))
@@ -571,7 +572,7 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
             tool(
                 "update_commitment",
                 {
-                    "id": item["id"],
+                    "reference": "presentation",
                     "deadline_text": "Friday at 6pm",
                 },
             ),

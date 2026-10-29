@@ -33,6 +33,18 @@ function capture(): ContextInspection {
 }
 
 describe("Response context inspector", () => {
+  it("shows committed effects and workflow transitions beside the existing trace",async()=>{
+    const data=capture();
+    data.execution_status="delivered";data.event_id="event-1";
+    data.trace!.effects=[{kind:"reminder",id:"plan-1",version:1,status:"saved"}];
+    data.trace!.transitions=[{type:"proposal",id:"proposal-1",from:"proposed",to:"executed"}];
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(json(data));
+    render(<ResponseContext messageId="answer-1" onClose={noop} onSessionExpired={noop}/>);
+    expect(await screen.findByText("Persisted effect receipts")).toBeInTheDocument();
+    expect(screen.getByText("Workflow transitions")).toBeInTheDocument();
+    expect(screen.getByText(/"proposal-1"/)).toHaveTextContent('"executed"');
+    expect(screen.getByText(/No tool calls were requested/)).toBeInTheDocument();
+  });
   it("starts with the final call and separates the real inputs and intermediate tools", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(json(capture()));
     render(<ResponseContext messageId="answer-1" onClose={noop} onSessionExpired={noop}/>);
