@@ -1,10 +1,64 @@
 # Implementation Status
 
+## Semantic release deployed; extended owner trial active — 2026-10-29
+
+**Application revision:** `c4137ec503c5a6a3b75974c5a2e044b4e4088cd7`, pushed on
+`feat/functional-autonomy` and deployed to Modal plus the optional local API/frontend.
+**Schema:** `0014`. **Active Modal app:** `ap-5vkZd5oyjoX90MIqXLnosu` (`mica-owner-trial`).
+**Authorized window:** original start **2026-10-28 11:54:34 UTC**, extended end
+**2026-11-03 09:54:34 UTC**. The prior Modal app `ap-1yObYNST6QMQ207oajaSga` is stopped.
+
+- GitHub CI passed for the deployed revision (backend, frontend, dependency checks and build):
+  https://github.com/Nini0la/fpc-pet/actions/runs/40853857079.
+  Local verification: **571 backend tests**, **69 frontend tests**, Ruff/mypy, frontend lint/type
+  checks/build, eight rendered architecture diagrams and the real-Azure semantic smoke described below.
+- Stopped cloud/local writers and took a fresh PostgreSQL 18 backup before migration:
+  `.local/rollouts/semantic-integration/production-pre-0014.dump`, SHA-256
+  `1993f059ae7d984a7f7e413afb65874ba490e9c6ff1532b16951b17e667f87e2`.
+  Migration preserved all original columns of **316 pre-migration rows**, verified before writers
+  restarted. Private manifest/results: `production-original-rows.json`, `cutover-results.json`.
+- The first migration attempt timed out because the private verifier retained a read transaction
+  that blocked DDL. It rolled back; verification confirmed original data unchanged. Switching the
+  verifier to autocommit released those table locks, and the retry succeeded using the original
+  preserved backup. This was a rollout-helper issue, not an application schema failure.
+- Runtime and explicitly extended window Secrets were updated while the app was stopped, then
+  fresh containers deployed. Authenticated cloud inspection confirmed the exact revision, schema,
+  active owner link, new cutoff and advancing scheduler/Telegram heartbeats. A real Azure connectivity
+  probe and Telegram identity/webhook checks passed inside the deployed image.
+- Optional local API/frontend use the pinned release `.local/releases/semantic-owner-final/`.
+  Both HTTP services and authenticated `/api/continuations` passed. The fallback worker/Telegram
+  LaunchAgents also point to this release but remain **disabled** while Modal is active.
+  WhatsApp remains disabled; no public endpoint or multi-user access was added.
+
+### Actual deployed reminder delivery
+
+A clearly labeled **synthetic authenticated API turn**, not a fabricated incoming Telegram update,
+requested one reminder after 30 seconds. The deployed Azure path used one inference call; the
+cloud worker independently executed and forwarded it through the existing owner Telegram link:
+
+- Plan: `623215b3-2468-412e-8a99-33124f0eb5f7` — one-time, now completed.
+- Scheduled action: `2a416394-0223-4c0f-848e-2cf918eb0a53` — succeeded, one attempt.
+- Telegram delivery: `56facd56-7255-4990-9a9d-2baa6ba820de` — sent, one attempt,
+  provider message **44**. This proves Telegram acceptance, not that the owner read it.
+- No additional effect appeared after another worker sweep. The scheduled message's existing
+  Context Inspector returned the action and provider evidence. The test initially queried the
+  creation acknowledgement instead; correcting the read-only inspector target verified the already
+  delivered message without sending another test reminder.
+- Private evidence: `.local/rollouts/semantic-integration/live-rollout-results.json`.
+  At 10:10 UTC inspection showed **17 sent deliveries**, current heartbeats and no reported failed
+  or uncertain delivery states.
+
+**Remaining human gate:** a new owner-sent Telegram conversation should exercise disclosure,
+short recurring check-ins, interrupted proposal acceptance, and pause/cancel on this deployed
+revision. Those semantic cases passed real Azure in isolation; the live deployed check above proves
+outbound reminder delivery, not all incoming Telegram scenarios. Owner acceptance is pending;
+the branch remains unmerged and Milestone 2 has not started.
+
 ## Owner-authorized publication and trial extension — 2026-10-29
 
 The owner explicitly requested **commit, push and deploy**, and extended the trial to November 3.
 Retaining the existing time of day, the authorized new cutoff is **2026-11-03 09:54:34 UTC**.
-Deployment/application of the new cutoff is pending the rollout recorded below. The original
+Deployment/application of the new cutoff completed as recorded above. The original
 start remains 2026-10-28 11:54:34 UTC; the branch must remain unmerged.
 
 `cloud_trial.window` retains the default 46-hour limit unless the private window configuration
@@ -15,13 +69,14 @@ operator configuration change, not permission obtainable through conversation/to
 After this addition: **571 backend tests passed in 106.38s**, Ruff and mypy passed. Tests cover
 the exact November 3 bound, missing authorization, invalid bounds and overrun rejection.
 
-## Semantic conversation integration — verified locally, deployment pending (2026-10-29)
+## Semantic conversation integration — pre-deployment verification (2026-10-29)
 
-**Source:** uncommitted working-tree changes on `feat/functional-autonomy`, based on `84c710d`.
-**Production:** read-only Modal inspection at approximately 04:49 UTC confirmed revision `8b8bb7b`,
+**Source at verification:** working-tree changes based on `84c710d`, subsequently released as `c4137ec`.
+**Pre-deployment production:** read-only Modal inspection at approximately 04:49 UTC confirmed revision `8b8bb7b`,
 schema `0013`, active owner link, current Telegram/scheduler heartbeats and 16 sent deliveries.
 At that inspection, the trial still ended **2026-10-30 09:54:34 UTC**. The following results describe the new source,
-not the currently deployed bot; live-channel semantic acceptance and owner approval remain pending.
+not the old bot inspected at that time. Subsequent deployment evidence is recorded above;
+full owner-channel semantic acceptance and owner approval remain pending.
 
 ### Implemented behavior
 
@@ -142,7 +197,7 @@ No application tests were added or rerun for this documentation-only audit, and 
 data mutations, service restarts or deployment changes were performed. Existing test sources and
 the earlier recorded acceptance results are cited without representing them as new test runs.
 
-## Authorized 46-hour Modal trial — ACTIVE, laptop-independent operation verified
+## Initial 46-hour Modal trial — historical cutover, laptop-independent operation verified
 
 **Deployed revision:** `8b8bb7b`. **Window:** 2026-10-28 11:54:34 UTC through
 2026-10-30 09:54:34 UTC. Modal app `mica-owner-trial`, current ID `ap-1yObYNST6QMQ207oajaSga`.

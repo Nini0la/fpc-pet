@@ -1,23 +1,31 @@
 # Owner-only bounded cloud trial
 
-- **Application revision:** `8b8bb7bc0701d7e6da5575759875923e17c9c3f3`
+- **Application revision:** `c4137ec503c5a6a3b75974c5a2e044b4e4088cd7` (schema `0014`)
 - **Start:** 2026-10-28 11:54:34 UTC
-- **End:** 2026-10-30 09:54:34 UTC
-- **Modal app:** `mica-owner-trial`, active app ID `ap-1yObYNST6QMQ207oajaSga`
+- **End:** 2026-11-03 09:54:34 UTC (owner-authorized extension)
+- **Modal app:** `mica-owner-trial`, active app ID `ap-5vkZd5oyjoX90MIqXLnosu`
 - **Dashboard:** https://modal.com/apps/nini-adegboyega/main/deployed/mica-owner-trial
 
-**Authorized update (2026-10-29, application pending):** the owner requested publication/deployment
+**Applied authorized update (2026-10-29):** the owner requested publication/deployment
 of the semantic integration and extension through **2026-11-03 09:54:34 UTC**, retaining the
 original start and time of day. The historical 46-hour cutover evidence below describes the first
 window. The runtime now permits a longer window only with an explicit private
 `MICA_TRIAL_AUTHORIZED_END_AT`; the configured cutoff may not exceed it.
+
+The updated image, schema, extended cutoff, advancing worker heartbeats and Azure connectivity
+were verified after deployment. All **316 pre-upgrade rows** retained their original column values.
+A labeled synthetic API reminder was then executed by the cloud worker and accepted by Telegram
+as message **44**, with no duplicate on a subsequent sweep. Full backup hash, action/delivery IDs,
+test results, CI and remaining owner acceptance: [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+The previous app `ap-1yObYNST6QMQ207oajaSga` is stopped. Local services and disabled fallback workers
+are pinned to `.local/releases/semantic-owner-final/` at the deployed application revision.
 
 The existing Telegram adapter and personal scheduler now run in Modal against the owner's direct
 SSL Neon PostgreSQL connection. Azure remains the inference provider. The Mac can be off during
 the trial. Telegram remains owner-only and WhatsApp remains disabled. No public web endpoint or
 multi-user release was introduced; the optional local web UI/API use the same hosted database.
 
-## Cutover and preservation
+## Original cloud cutover and preservation (historical)
 
 - The hosted database was verified empty before restore. Local API/frontend and both workers were
   stopped after checking that no Telegram processing/sends were in flight.
@@ -35,7 +43,7 @@ multi-user release was introduced; the optional local web UI/API use the same ho
   automatic restart at login. The local web/API were later restarted as optional clients of Neon;
   turning the Mac off only removes that local dashboard, not Telegram/autonomous operation.
 
-## Actual cloud verification
+## Initial cloud verification (historical)
 
 - Disabled preflight, executed inside the Modal image: Neon `SELECT 1`, Telegram bot identity and
   webhook check, and an actual `gpt-5.4-2026-03-05` Azure response all passed before activation.
@@ -117,9 +125,10 @@ Quiet hours remain 21:00–08:00 UTC. `/stop` pauses proactive Telegram DMs. No 
 
 ## Semantic integration update procedure
 
-**Readiness as of 2026-10-29:** the semantic source/schema `0014` is verified locally but has not
-replaced the revision/schema at the top of this document. Current test and real-Azure evidence:
-[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). The original trial cutoff remains binding.
+**Completed on 2026-10-29:** the semantic source/schema `0014` is deployed at the revision above.
+Test, real-Azure, migration and actual Telegram delivery evidence:
+[IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). The extended November 3 cutoff is binding.
+The following procedure records the rollout and can guide a future explicitly authorized update.
 
 1. Pin the tested source and retain the current release as a fallback. Keep the trial start;
    do not invoke `prepare_trial.py activate` for this update. For the specifically authorized
