@@ -97,6 +97,8 @@ It also reports important gaps:
 
 ### Milestone 1 — Functional autonomy (current mission)
 
+**Status:** Implemented, tested but not fully confirmed. Full owner confirmation remains pending.
+
 **Outcome:** Mica can capture an intention in ordinary conversation, preserve it durably, act on a scheduled/event trigger without a new user message, incorporate corrections and completion, and record verifiable results.
 
 - Use the existing application, Azure inference, database, worker and tools wherever feasible.
@@ -122,7 +124,16 @@ Work includes: relevance of recall, quality of questions, correction handling, a
 - Measure reliability on repeatable long-horizon scenarios: retrieval, intent drift, tool completion, authorization, retries, schedule adherence, recovery, and user corrections.
 - For the hackathon build, actually run and show at least one qualifying NVIDIA open model invocation on Nebius; an Azure-only final demonstration is not enough for that technology requirement. Confirm the current competition rules independently at submission.
 
-This is the desired progression: **functional autonomy → desired experience → infrastructure and measured reliability**. Evaluation begins in Milestone 1; sophisticated longitudinal evaluation matures in Milestone 3.
+The original progression is **functional autonomy → desired experience → infrastructure and measured reliability**. Evaluation begins in Milestone 1; sophisticated longitudinal evaluation matures in Milestone 3.
+
+**Owner-directed sequencing update:** bring forward Nebius Token Factory and Hermes Agent
+integration planning while Milestone 1 remains implemented, tested but not fully confirmed.
+Milestone 2 has not started. The original roadmap established provider/runtime direction, not
+a completed integration design. Define and verify the provider and runtime boundaries against
+the current application before changing the deployed path. PostgreSQL remains authoritative for
+operational state, permissions and effects; Azure remains the verified comparison baseline.
+This is a scoped exception to the earlier Nebius/Hermes deferral, not acceptance of Milestone 1
+or authorization to implement the whole of Milestones 2–3.
 
 ## 6. Non-negotiable design principles
 

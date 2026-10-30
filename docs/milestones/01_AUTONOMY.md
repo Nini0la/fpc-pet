@@ -1,9 +1,21 @@
 # Milestone 01 — Make Mica Genuinely Autonomous
 
-**Status:** Ready for repository inspection and implementation  
+**Status:** Implemented, tested but not fully confirmed
+
 **Authority:** `docs/MICA_TARGET.md`  
 **Development inference:** Existing Azure model provider  
 **Objective:** Turn Mica's existing features into one reliable, event/schedule-driven loop that carries intentions from conversation to authorized follow-through.
+
+**Owner status decision:** implementation and recorded tests are acknowledged; full real-world
+confirmation and milestone acceptance remain pending. Milestone 2 has not started. See
+`docs/IMPLEMENTATION_STATUS.md` for deployed evidence and the remaining confirmation gate.
+
+**Owner-directed priority update:** Nebius Token Factory and Hermes Agent integration planning
+is being brought forward from the infrastructure roadmap while this status remains open. This
+supersedes the earlier blanket deferral of those two integrations below; it does not mark this
+milestone accepted or start the Milestone 2 companion-experience scope. Azure remains the tested
+baseline. Integration design, implementation and evidence must be recorded separately from the
+existing Azure acceptance results.
 
 ## 0. Your assignment
 

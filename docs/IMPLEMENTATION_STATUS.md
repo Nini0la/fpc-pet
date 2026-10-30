@@ -1,5 +1,101 @@
 # Implementation Status
 
+## Owner-authorized Edge IMCI artifact cleanup — 2026-10-30 02:20–02:21 UTC
+
+The owner explicitly authorized clearing the two previously inspected heavy artifact volumes.
+Removed all contents while retaining the named volumes in environment `main`:
+
+- `edge-imci-routing-matrix-v1-artifacts`: **280.052 GiB**, 44 root entries;
+  fresh recursive listing verified zero entries at **02:20:08 UTC**.
+- `edge-imci-finetune-artifacts`: **204.061 GiB**, 91 root entries;
+  fresh recursive listing verified zero entries at **02:21:30 UTC**.
+
+Combined with the earlier Foundry cleanup, approximately **1,494.394 GiB** of logical contents
+were removed. The pre-cleanup inventory implies approximately **160.167 GiB** remains in other
+volumes; this is an estimate from that inventory, not a fresh account-wide scan. Other volumes,
+Mica, and Neon were not modified. External checkpoint copies were not inspected or changed.
+The pre-deletion container inventory showed only Mica running. Billing reductions remain subject
+to Modal's documented post-deletion delay and have not yet been verified.
+
+## Owner-authorized Modal cache cleanup — 2026-10-30 02:08 UTC
+
+The owner explicitly requested clearing `fpc-foundry-models`. Removed all 17 root entries
+from that volume in environment `main`, including model caches, vLLM cache and lock/metadata
+files. Pre-deletion metadata totaled **1,010.281 GiB**. A fresh recursive listing at
+**02:08:31 UTC** returned **zero entries**; the empty named volume itself was retained.
+The two Edge IMCI artifact volumes were not changed: their possible removal remains undecided.
+Mica mounts no Modal persistent volume, and its deployment/database were not modified.
+Billing reductions are not yet verified; Modal documents up to four days of post-deletion
+storage billing. The earlier inventory and costs below are historical pre-cleanup evidence.
+
+## Modal cost audit — read-only, 2026-10-30 approximately 01:34 UTC
+
+Owner reported approximately $35 of monthly Modal usage. Queried authenticated
+`modal billing summary --for 2026-10 --json`, resource-level app reports, current rates,
+app/container inventory and volume metadata. The account summary attributed approximately
+**$91.27 gross to volumes**, with **$56.49 free-storage adjustment**, leaving approximately
+**$34.78 storage usage before credits**. Deployed-app compute was approximately **$0.72**;
+the app report identified Mica deployments and their shutdown probe. Account credits applied
+were approximately **$35.51** and the billing summary reported **$0.00 billed cost** at inspection.
+This is a current API snapshot, not a final monthly invoice or a statement about remaining credits.
+
+Mica's complete October 29 UTC compute usage was **$0.45697565**. At similar activity this is
+roughly $0.46/day or $14 per 30 days, excluding separately billed Azure/Neon and changes in workload.
+Mica uses no Modal persistent volumes or GPUs. The only running container at initial inspection
+belonged to Mica; deployed older apps had zero containers, which does not eliminate storage costs.
+Metadata inventory found 21 pre-Mica volumes created in August/September, totaling approximately
+1,655 GiB of logical file sizes. Logical sizes identify cleanup candidates, not exact per-volume
+billed bytes or historical charges. No files, apps, budgets or billing settings were changed.
+
+Private reproducible report and helper: `.local/rollouts/modal-trial/billing-audit-20261030.json`
+and `billing_audit.py`. The app report omits volume attribution; storage totals come from the
+workspace summary. SDK daily reports omit the incomplete current day, so their app totals can
+lag the current summary. Review retained model/artifact volumes before any cleanup; deleting a
+volume requires a separate decision about preserving its contents. Modal documents up to four
+days of continued storage billing after deletion. No application tests apply to this audit.
+
+Follow-up metadata inspection at 01:44 UTC identified the largest volume (`fpc-foundry-models`)
+as model-download cache layout plus vLLM cache: approximately 703.77 GiB under GLM-5.3,
+155.44 GiB under DeepSeek-V4-Flash-0731, 89.47 GiB under Mistral-Small-3.2-24B, and smaller
+Qwen/Granite/Phi caches. The two owner-selected Edge IMCI artifact volumes contain trained
+outputs: routing has 44 top-level run directories and 618 checkpoint directories; finetuning
+has 91 top-level directories and 150 checkpoint directories, with model/adapter weights,
+optimizer state and evaluation files. Backup availability and deployed dependencies have not
+been established for deletion. No deletion was performed. Detailed metadata-only evidence:
+`.local/rollouts/modal-trial/large-volume-details-20261030.json`.
+
+## Current milestone status and owner-directed next focus
+
+**Milestone 1: Implemented, tested but not fully confirmed.** This is the owner's requested
+status. The deployed implementation and recorded checks below stand; real-world confirmation
+and owner acceptance remain open. **Milestone 2 has not started.**
+
+The owner has requested bringing **Nebius Token Factory and Hermes Agent** forward from the
+infrastructure roadmap. Repository review found an existing high-level direction in
+`MICA_TARGET.md` §5: a swappable inference provider, NVIDIA Nemotron via Nebius, and evaluation
+of Hermes as a runtime/execution component with explicit ownership boundaries. It did **not**
+establish a detailed Hermes integration design or verified Nebius deployment.
+
+Current implementation has a generic OpenAI-compatible gateway (`backend/app/gateway.py`) in
+addition to Azure, but the cloud preparation path explicitly selects Azure. No Hermes runtime
+integration or live Nebius validation is recorded. Those are starting points, not completed work.
+
+Next integration planning should establish:
+
+1. **Nebius inference:** verify the current endpoint, available model/tool-call capabilities and
+   configuration against the existing gateway; define bounded live tests and compare the same
+   conversational/autonomy scenarios with the Azure baseline.
+2. **Hermes runtime:** inspect the intended Hermes Agent project's current APIs and execution model;
+   decide which responsibility it owns within Mica. Specify tool access, conversation/context flow,
+   persistence, restart behavior and tracing without competing schedulers or duplicate action owners.
+3. **Integrated proof:** preserve Neon as operational authority and reuse validated Mica domain
+   operations, permissions, action/outbox evidence and owner controls. Verify continuity, corrections,
+   interruption/acceptance, unattended work and duplicate recovery before a runtime cutover.
+
+These are planning requirements, not claims that either integration is implemented or deployed.
+This status/documentation update changed no application behavior and required no application test run;
+`git diff --check` is the documentation verification.
+
 ## Semantic release deployed; extended owner trial active — 2026-10-29
 
 **Application revision:** `c4137ec503c5a6a3b75974c5a2e044b4e4088cd7`, pushed on
