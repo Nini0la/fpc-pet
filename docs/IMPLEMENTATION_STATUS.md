@@ -5,8 +5,8 @@
 **Final engineering handoff:** Gates A, B and C passed on the deployed judge service; Gate D's
 public code/docs/testing/video-support package is prepared. Public repository:
 **https://github.com/Nini0la/mica**, MIT license detected, main branch. Deployed public runtime
-**`a10ecc6f621c954219a6b1d743f7b6af66176bfc`**, CI passed:
-https://github.com/Nini0la/mica/actions/runs/41051112753. The development source is preserved on
+**`60bd9059234eb369f12bc15309982c704308d712`**, CI passed:
+https://github.com/Nini0la/mica/actions/runs/41053817189. The development source is preserved on
 `feat/functional-autonomy` (`191f32d`, then bounded-budget/security-fixture correction `51949cb`).
 
 Final verification at 12:02 UTC confirmed public HTTPS, the exact Nebius/NVIDIA provider/model,
@@ -16,6 +16,11 @@ reminder delivery. Action `b89b6819-af65-4a7c-84be-3545743f94e6` delivered once;
 were genuine runtime calls. Final dataset is `mica_judge_submission`; engineering data is retained
 in `mica_judge_demo`. Private table reads remain denied to the restricted judge role. Live origin,
 CSRF, unauthenticated access and external-action blocking checks passed.
+
+At 12:16 UTC, the final `60bd905` deployment additionally passed a fresh-browser check showing
+`nebius` and the exact NVIDIA model in the existing Context Inspector. This change added a
+provider label to the previously verified backend-identical `a10ecc6` release. Provider/model,
+cutoff, scheduler heartbeat and disabled external messaging were reconfirmed from live health.
 
 **604 backend tests**, **69 frontend tests**, lint/type checks, audit, static build and public CI
 passed. The final judge profile uses a bounded **2,400-token** Nebius output allowance: a verified
