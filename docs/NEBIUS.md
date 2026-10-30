@@ -9,8 +9,10 @@ No model weights or GPU containers are needed on Modal.
 
 Milestone 1 remains **implemented, tested but not fully confirmed**. Nebius/Nemotron is the
 owner-directed immediate priority; Milestone 2 remains unstarted and Hermes remains a separate
-runtime-integration follow-up. Azure is the deployed comparison baseline until live Nebius
-acceptance is recorded in [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md).
+runtime-integration follow-up. **The owner trial now uses Nebius/Nemotron**, switched on October 30
+at approximately 08:57 UTC at revision `25f8959`. Azure is retained for manual rollback, not automatic
+fallback. Owner-channel experience confirmation remains open. The requested three-interaction proof
+passes: [exact model, traces, costs and receipts](NEBIUS_ACCEPTANCE.md).
 
 ## Model selection — verified documentation, not a live-model claim
 
@@ -114,7 +116,7 @@ backend/.venv/bin/python deploy/prepare_trial.py refresh --provider nebius
 This writes only the private runtime-secret input; it neither activates a new window nor changes
 the existing expiry. It exports only the chosen provider's credentials/settings. Follow the existing
 [Modal update procedure](MODAL_TRIAL.md#semantic-integration-update-procedure) to update the runtime
-Secret and refresh containers. Do not rerun `activate` or extend the November 3 cutoff for a provider
+Secret and refresh containers. Do not rerun `activate` or extend the December 31 cutoff for a provider
 change. Local API and cloud worker should use the same selected provider once switched.
 
 Authenticated `inspect_runtime` returns provider and configured model as well as revision/schema.

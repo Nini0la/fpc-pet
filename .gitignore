@@ -6,8 +6,14 @@
 **/*.egg-info/
 **/*.tsbuildinfo
 .env
+.env.*
+!.env.example
+!.env.judge.example
 *.db
 *.db-wal
 *.db-shm
 whatsapp-bridge/state/
 .local/
+.DS_Store
+frontend/out/
+mica_agent_spec.zip

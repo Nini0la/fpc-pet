@@ -1,5 +1,130 @@
 # Implementation Status
 
+## Final hackathon submission mission — October 30, 2026
+
+Official rules verified at https://nebiusglobalaihackathon.devpost.com/rules:
+deadline **18:00 WAT / 17:00 UTC October 30**; judging ends **December 23, 20:00 UTC**.
+The current mission is the owner's explicitly authorized isolated public judge demonstration
+and submission package, not a Milestone 2 expansion or owner acceptance of Milestone 1.
+
+### Preservation and gate status
+
+- Suspended conversational-quality changes are preserved in stash
+  **`ee097774a2ac1f0203fe5df4f89447eba5ed48b9`**, including the new untracked regression test in
+  its third-parent tree. No verified runtime feature was discarded. The judge work started from
+  the deployed/verified `25f8959` baseline. Completed acceptance harnesses and prior uncommitted
+  deployment evidence are retained. Deferred scope is in `docs/submission/POST_SUBMISSION_BACKLOG.md`.
+- **Gate A passed:** real Nemotron conversation, model-selected commitment creation/amendment,
+  persisted reminder and browser-independent worker delivery. Actual provider/model identity is
+  in the existing trace; no Azure fallback is used by the judge instance.
+- **Gate B passed:** deployed same-origin HTTPS static Next.js + FastAPI on Modal at
+  https://nini-adegboyega--mica-demo.us-east.modal.run. Fresh Chromium login, context, create/amend,
+  reminder, 65-second browser closure and fresh-session delivery inspection passed. Restricted
+  `mica_judge` database role was denied private-table access with SQLSTATE `42501`. No personal
+  Telegram credentials/links or unrestricted external actions are attached.
+- **Gate C passed:** real Tavily Search/Extract through `research_goal` from the deployed Mica
+  runtime, context-influenced query, original source links, explicit unknowns, then a model-created
+  commitment retaining the chosen source and verification next action. Detailed request IDs and
+  caveats are in `docs/submission/EVIDENCE.md`. An initial missing runtime `httpx` dependency and
+  overly long/mixed-source synthesis were corrected; evidence-only synthesis excludes old research
+  replies and preserves the same NVIDIA model/provider.
+- **Gate D in progress:** MIT license, curated public README, setup/deployment/recovery, judge
+  instructions, official rules, Devpost text and a 2:50 video sequence are prepared under
+  `docs/submission/`. A clean public source snapshot is being audited to exclude personal rollout
+  artifacts, billing records, credentials and the original specification ZIP.
+
+**Checks:** 603 backend tests passed in 123.87s, Ruff/mypy passed (41 modules); 69 frontend tests,
+ESLint, TypeScript, dependency audit and static production build passed. Live browser evidence is
+retained privately under `.local/rollouts/judge-demo/` (`gate-b-results.json`, `gate-c-results.json`,
+screenshots). The engineering database is preserved; `mica_judge_submission` has been provisioned
+with a fresh synthetic seed for final publication. One scheduler per active judge deployment;
+private owner deployment remains independent on Nemotron with its December 31 cutoff.
+
+The owner still must record/upload the public YouTube video and submit Devpost. Neither task
+has been represented as complete. Final public revision, health and handoff follow below.
+
+## Owner-authorized cutoff extended to December 31 — 2026-10-30
+
+At the owner's explicit request, extended the active trial cutoff to
+**December 31, 2026 at 09:54:34 UTC**, retaining the existing time of day and original
+October 28 start. Updated both the end and explicit authorization bound in the private window
+Secret, then stopped/redeployed the same pinned Nemotron release to refresh the containers.
+
+- Active app: **`ap-UiUS2EBdamKGyGCdV92nUI`**, `mica-owner-trial`.
+- Revision: `25f89598e9a7ed0e4afbe8a509968688f20da81f`, schema `0014`.
+- Cloud inspection confirmed `active=true`, end `2026-12-31T09:54:34+00:00`, provider `nebius`,
+  model `nvidia/Nemotron-3.5-Super-VL`, owner present and Telegram linked.
+- Direct guard checks passed: active one second before the new cutoff, inactive at the cutoff
+  and afterward. This was a timing-configuration update; no application source change or migration.
+- Previous app `ap-DKr0Mueb5LthiJdkrrD21n` is stopped. The old timing configuration is retained
+  privately at `.local/rollouts/modal-trial/window-before-dec31.json`.
+
+The expiry checker continues to stop this Modal app at the configured end. Historical November 3
+dates and window hashes below describe prior authorizations and must not be used to undo this
+extension during a provider rollback.
+
+## Live owner trial switched to Nemotron — 2026-10-30 08:57 UTC
+
+At the owner's explicit request to try the Nemotron experience, switched the cloud Telegram
+runtime and optional local web/API to **Nebius Token Factory / `nvidia/Nemotron-3.5-Super-VL`**.
+The active settings are reasoning **low**, output cap **1,200**, timeout **15 seconds** and
+uncached cost estimates **$0.30/M input / $0.90/M output**. There is no automatic Azure fallback.
+
+- **Pinned deployed revision:** `25f89598e9a7ed0e4afbe8a509968688f20da81f` (runtime `8e25def`).
+  Local release: `.local/releases/nebius-owner-trial/`; frontend rebuilt successfully.
+- **Active Modal app:** `ap-DKr0Mueb5LthiJdkrrD21n` (`mica-owner-trial`). Previous Azure app
+  `ap-5vkZd5oyjoX90MIqXLnosu` is stopped. Fresh containers loaded the new runtime Secret.
+- Authenticated cloud inspection confirmed `provider=nebius`, the exact configured model, schema
+  `0014`, owner present/Telegram linked and advancing Telegram/scheduler heartbeats. A real call
+  from the deployed image returned **`nvidia/Nemotron-3.5-Super-VL`**; bot identity/webhook and
+  database checks passed. At 09:00 UTC, delivery counts remained 28 sent with no reported
+  failed/uncertain state. No artificial owner Telegram input was injected.
+- The cloud runtime Secret contains only the selected Nebius inference credentials; Azure keys
+  are absent. Root `.env` selects Nebius and retains Azure configuration for manual rollback.
+- **Trial end unchanged:** November 3, 2026, 09:54:34 UTC. Window-file SHA-256 before/after:
+  `25bfd607e298a8d2d55208806d7a9b74814c7e6892cff3fe86fe623b56fde23f`.
+- This was a configuration/release change, with no schema migration. Existing Telegram identity,
+  link generation, write/proactive permissions and proactive-since timestamp were verified
+  unchanged. Local authenticated API/continuations and frontend HTTP checks passed.
+  Local background workers remain disabled; WhatsApp remains disabled.
+
+Private rollback/evidence: `.local/rollouts/nebius-cutover/` contains `pre-nebius.env`,
+`azure-runtime-secret.json`, the original window, original LaunchAgent plists, link snapshot,
+`configuration-results.json` and `verification-results.json`. To revert, stop this cloud app,
+restore the selected Azure runtime settings and local environment from those private backups,
+then redeploy/restart the corresponding pinned services. Keep Neon and the existing window;
+no database downgrade or history replacement is needed.
+
+**Owner action:** send a new message to the existing `@QwenErringBot` chat. No relinking/reset is
+needed. New Telegram turns now select Nemotron; owner assessment of the experience remains open.
+Milestone 1 remains **implemented, tested but not fully confirmed**.
+
+## Requested three-interaction Nemotron proof — PASS (2026-10-30 08:22 UTC)
+
+Ran real contextual conversation, model-generated commitment creation, and a 30-second reminder
+through the actual Mica HTTP app, fresh local PostgreSQL and a separate real scheduler process.
+Exact requested/returned model: **`nvidia/Nemotron-3.5-Super-VL`**, provider **Nebius Token Factory**.
+The reminder was delivered to **in-app chat** with the API stopped, 3.877 seconds after its due
+instant. The subsequent worker sweep produced no duplicate. The API was restarted to verify
+the persisted delivery in the existing inspector.
+
+Four model calls (one context-setting turn plus the three requested interactions) used **49,854
+input tokens and 1,282 output tokens**. Authenticated model metadata supplied rates of $0.30/M
+input and $0.90/M output; the **uncached list-price estimate is $0.01611**, not an invoice debit.
+Model-call latencies: **2.199, 3.031, 2.604 and 2.732 seconds**.
+
+Provider traces and an opt-in subprocess network audit confirm **four Nebius inference requests,
+zero Azure requests and zero worker inference calls**. Azure configuration was absent from the
+test processes; the worker had no model credentials and external connections were blocked.
+No production data or provider configuration was changed. This is real inference/application
+execution with synthetic test inputs; it does not claim production Telegram delivery.
+
+Full receipts, exact IDs, cost source, reproducible commands and private artifact references:
+[NEBIUS_ACCEPTANCE.md](NEBIUS_ACCEPTANCE.md). Acceptance harness:
+`backend/tests/live_nebius_acceptance.py`. Actual run, Ruff, mypy and diff whitespace checks passed.
+Milestone 1 remains **implemented, tested but not fully confirmed**. The owner trial still used
+Azure at the time of this isolated proof; the later live cutover is recorded above.
+
 ## Nebius/Nemotron integration — implemented and live-tested in isolation (2026-10-30)
 
 **Published implementation:** `8e25def6f541af6274fc395a8e6fc585e97bd702` on
