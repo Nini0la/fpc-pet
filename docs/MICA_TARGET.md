@@ -128,6 +128,8 @@ The original progression is **functional autonomy → desired experience → inf
 
 **Owner-directed sequencing update:** bring forward Nebius Token Factory and Hermes Agent
 integration planning while Milestone 1 remains implemented, tested but not fully confirmed.
+The owner's subsequent implementation priority is **Nebius Token Factory + NVIDIA Nemotron
+first**; see `docs/NEBIUS.md`. Hermes runtime work follows separately.
 Milestone 2 has not started. The original roadmap established provider/runtime direction, not
 a completed integration design. Define and verify the provider and runtime boundaries against
 the current application before changing the deployed path. PostgreSQL remains authoritative for
@@ -143,7 +145,7 @@ or authorization to implement the whole of Milestones 2–3.
 4. **Meaning outranks transcript volume.** Context selection must prioritize current, relevant intentions and their provenance.
 5. **State is inspectable.** A developer and eventually the owner must see why an action was due, what Mica decided, whether it ran, and what changed.
 6. **Safe by default.** No unauthorized sends, invented completions, duplicate effects, exposed secrets, or cross-user data access.
-7. **Model-budget awareness.** Use Azure for development and deterministic checks for routine scheduling; do not burn limited Nebius inference credits during the first milestone.
+7. **Model-budget awareness.** Retain Azure as the verified baseline and deterministic checks for routine scheduling. The owner-directed Nebius integration permits bounded provider tests; record usage and results rather than running uncontrolled evaluations.
 8. **No silent claims.** Tests and reports must distinguish implemented, unit-tested, integration-tested and manually observed behaviors.
 9. **Own the lifecycle.** If Mica creates a commitment, it must be able to edit, complete, pause, cancel, and follow through on it.
 10. **Maintain real user control.** Existing single-owner authentication must not be presented as multi-user security. Keep the app private until proper identity and isolation are implemented and verified.

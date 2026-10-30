@@ -130,6 +130,7 @@ def inspect_runtime(probe_only: bool = False):
                 "database_connected": db.scalar(text("SELECT 1")) == 1,
                 "bot_username": identity["username"],
                 "model": reply.model,
+                "provider": os.environ.get("PROVIDER"),
                 "model_responded": bool(reply.content),
                 "active": active(),
             }
@@ -140,6 +141,10 @@ def inspect_runtime(probe_only: bool = False):
             "active": active(),
             "ends_at": bounds[1].isoformat() if bounds else None,
             "revision": os.environ.get("MICA_DEPLOYED_REVISION"),
+            "provider": os.environ.get("PROVIDER"),
+            "configured_model": os.environ.get("NEBIUS_MODEL")
+            if os.environ.get("PROVIDER") == "nebius"
+            else os.environ.get("AZURE_OPENAI_DEPLOYMENT"),
             "schema": db.scalar(text("SELECT version_num FROM alembic_version")),
             "owner_present": bool(owner),
             "telegram_linked": bool(linked and linked.linked),

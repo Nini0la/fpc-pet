@@ -16,6 +16,8 @@ supersedes the earlier blanket deferral of those two integrations below; it does
 milestone accepted or start the Milestone 2 companion-experience scope. Azure remains the tested
 baseline. Integration design, implementation and evidence must be recorded separately from the
 existing Azure acceptance results.
+The immediate implementation priority is now **Nebius Token Factory + NVIDIA Nemotron**;
+see `docs/NEBIUS.md`. Hermes remains a subsequent runtime-integration workstream.
 
 ## 0. Your assignment
 
@@ -25,7 +27,7 @@ You are the coding agent responsible for **implementing** this milestone, not pr
 
 ### Explicitly out of scope
 
-- Switching development inference to Nebius/Nemotron. Avoid spending Nebius credits.
+- Broad provider/runtime replacement outside the owner-directed Nebius/Nemotron integration scope.
 - Adding Hermes or Letta now without a demonstrated milestone-critical need.
 - Replacing the entire existing agent architecture; writing an unrestricted general agent.
 - Building a full enterprise goal planner, elaborate knowledge graph, broad computer-use/browser integration or multi-agent orchestration.

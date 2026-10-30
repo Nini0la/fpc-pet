@@ -27,6 +27,41 @@ def private_json(path, values):
         json.dump(values, stream, indent=2)
 
 
+def provider_settings(gateway):
+    """Private Secret values for exactly one validated provider, never diagnostic output."""
+    if gateway.provider == "azure_openai":
+        result = {
+            "AZURE_OPENAI_ENDPOINT": gateway.base_url,
+            "AZURE_OPENAI_API_KEY": gateway.api_key,
+            "AZURE_OPENAI_DEPLOYMENT": gateway.model,
+            "AZURE_OPENAI_API_VERSION": gateway.api_version,
+        }
+        prefix = "MODEL"
+    elif gateway.provider == "nebius":
+        result = {
+            "NEBIUS_BASE_URL": gateway.base_url,
+            "NEBIUS_API_KEY": gateway.api_key,
+            "NEBIUS_MODEL": gateway.model,
+        }
+        prefix = "NEBIUS"
+    else:
+        raise ValueError("Owner trial supports Azure or Nebius")
+    result.update(
+        PROVIDER=gateway.provider,
+        MODEL_MAX_OUTPUT_TOKENS=str(gateway.max_output_tokens),
+        MODEL_TIMEOUT_SECONDS=str(gateway.timeout_seconds),
+    )
+    if gateway.reasoning_effort:
+        result[f"{prefix}_REASONING_EFFORT"] = gateway.reasoning_effort
+    for suffix, price in (
+        ("INPUT_COST_PER_MILLION", gateway.input_cost_per_million),
+        ("OUTPUT_COST_PER_MILLION", gateway.output_cost_per_million),
+    ):
+        if price is not None:
+            result[f"{prefix}_{suffix}"] = str(price)
+    return result
+
+
 def main():
     from app.cloud_trial import window as valid_window
     from app.gateway import OpenAICompatibleGateway
@@ -34,7 +69,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=["prepare", "activate", "refresh", "extend"])
     parser.add_argument("--end-at", help="Explicit owner-authorized timezone-aware trial cutoff")
+    parser.add_argument("--provider", choices=["azure_openai", "nebius"])
     args = parser.parse_args()
+    if args.provider and args.operation not in {"prepare", "refresh"}:
+        raise SystemExit("--provider is only valid with prepare or refresh")
     state = ROOT / ".local/rollouts/modal-trial"
     if not state.is_dir():
         raise SystemExit("Create the private rollout directory first")
@@ -63,6 +101,8 @@ def main():
         values = {
             key: value for key, value in dotenv_values(ROOT / ".env").items() if value is not None
         }
+        if args.provider:
+            values["PROVIDER"] = args.provider
         url = make_url(values["MICA_CLOUD_DATABASE_URL"]).set(drivername="postgresql+psycopg")
         if (
             not url.host
@@ -76,36 +116,25 @@ def main():
         ):
             raise SystemExit("A direct SSL hosted PostgreSQL URL is required")
         gateway = OpenAICompatibleGateway.from_env(values)
-        if gateway.provider != "azure_openai":
-            raise SystemExit("This trial retains the existing Azure provider")
+        inference = provider_settings(gateway)
         revision = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip()
         runtime = {
             "APP_ENV": "production",
             "MODEL_MODE": "live",
-            "PROVIDER": "azure_openai",
+            **inference,
             "DATABASE_URL": url.render_as_string(hide_password=False),
             "ACCESS_CODE": values["ACCESS_CODE"],
             "SESSION_SECRET": values["SESSION_SECRET"],
             "ALLOWED_ORIGINS": values["ALLOWED_ORIGINS"],
-            "AZURE_OPENAI_ENDPOINT": gateway.base_url,
-            "AZURE_OPENAI_API_KEY": gateway.api_key,
-            "AZURE_OPENAI_DEPLOYMENT": gateway.model,
-            "AZURE_OPENAI_API_VERSION": gateway.api_version,
-            "MODEL_MAX_OUTPUT_TOKENS": str(gateway.max_output_tokens),
-            "MODEL_TIMEOUT_SECONDS": str(gateway.timeout_seconds),
             "TELEGRAM_BOT_TOKEN": values["TELEGRAM_BOT_TOKEN"],
             "CHANNEL_BRIDGE_URL": "",
             "CHANNEL_ACCOUNT_ID": "",
             "CHANNEL_BRIDGE_TOKEN": "",
             "MICA_DEPLOYED_REVISION": revision,
         }
-        if gateway.reasoning_effort:
-            runtime["MODEL_REASONING_EFFORT"] = gateway.reasoning_effort
         for key in (
-            "MODEL_INPUT_COST_PER_MILLION",
-            "MODEL_OUTPUT_COST_PER_MILLION",
             "MICA_MIN_CHECKIN_SECONDS",
             "MICA_REMINDERS_PER_HOUR",
             "MICA_REMINDERS_PER_DAY",

@@ -43,6 +43,7 @@ class ResponseTrace:
             else snapshot({"messages": messages, "tools": tools})
         )
         call: dict[str, Any] = {
+            "provider": getattr(self.gateway, "provider", "custom"),
             "index": len(self.data["calls"]) + 1,
             "phase": phase,
             "request": request,

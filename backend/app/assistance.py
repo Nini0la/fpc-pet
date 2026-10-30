@@ -182,7 +182,10 @@ TOOL_DESCRIPTIONS = {
     "Store its tool_name, title and arguments so a later 'OK do that' can execute it. Only propose "
     "schedule_reminder, update_reminder, create_commitment, update_commitment, "
     "save_project, save_idea, update_thread "
-    "or manage_workflow. Partial arguments are allowed; never invent missing data. For a relative "
+    "or manage_workflow. arguments must follow the TARGET tool's schema, including its action "
+    "field: an update_reminder interval change needs arguments.action='update', id, version and "
+    "interval_seconds. Partial arguments are allowed only for genuinely unknown user details; "
+    "do not omit known execution fields. Never invent missing data. For a relative "
     "alternative, use when.anchor=acceptance. Proposals do not execute or authorize actions.",
     "resolve_proposal": "Accept/execute, amend, pause, resume or cancel a persisted proposal using "
     "id/version, or reference to uniquely find an older proposal by title. "
@@ -546,6 +549,9 @@ reflection/vocabulary activities are context, not commands to consume the next m
 naturally to disappointment, questions and topic changes. Do not grade a disclosure as vocabulary
 or pivot from a difficult day into a quiz. Ask a caring follow-up when helpful; no tool is required
 for ordinary conversation. Use manage_workflow only for a genuine activity response/control.
+When the owner explicitly starts vocabulary practice or requests a reflection activity, use
+manage_workflow action=start to retain that activity before responding. Do not merely describe
+an exercise in prose and leave it absent from the saved activity state.
 conversation_state contains durable pending proposals, activities, reminder plans and policy.
 The current scheduling policy overrides older assistant statements about limits or capabilities.
 For recurring check-ins, communicate the bounded count or end condition, not an indefinite promise.
@@ -565,6 +571,8 @@ ask only when multiple proposals or genuinely missing information make the choic
 propose_action is a conversation-state tool and may stage an offer without operational write
 permission; actually executing it still requires the current write grant.
 Include response_text in a tool call when you can supply the natural reply to use AFTER validation.
+Tool arguments must use real JSON types: nested objects are objects, not strings containing JSON;
+an absent optional value is omitted or JSON null, never a string such as "None" or "null".
 For read tools whose answer needs returned data, leave response_text empty. This avoids unnecessary
 second inference calls: interpretation and action selection happen in the first conversational call.
 Scheduled output is saved in-app and forwarded to a linked Telegram DM when its proactive grant is
@@ -626,8 +634,7 @@ def conversational_receipt(result: dict[str, Any]) -> str:
         cadence = f"{interval // 60} minutes" if interval % 60 == 0 else f"{interval} seconds"
         return (
             f"Check-ins every {cadence}, "
-            f"{plan['max_occurrences'] - plan['occurrences']} remaining. "
-            + next_check
+            f"{plan['max_occurrences'] - plan['occurrences']} remaining. " + next_check
         )
     if result.get("kind") == "workflow":
         return "Activity updated."
@@ -739,7 +746,15 @@ def contextual_reply(
                     )
                 try:
                     wording = json.loads(call["function"]["arguments"]).get("response_text", "")
-                    if isinstance(wording, str) and wording.strip():
+                    effect = result.get("execution") or result
+                    if effect.get("kind") == "reminder" and effect.get("status") in {
+                        "saved",
+                        "updated",
+                    }:
+                        # Proposed wording cannot know the resolved post-execution clock.
+                        # The factual reminder receipt below supplies the actual schedule.
+                        natural_replies.append("Done.")
+                    elif isinstance(wording, str) and wording.strip():
                         natural_replies.append(wording)
                 except (ValueError, AttributeError):
                     pass

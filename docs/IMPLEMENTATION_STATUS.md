@@ -1,5 +1,94 @@
 # Implementation Status
 
+## Nebius/Nemotron integration — implemented and live-tested in isolation (2026-10-30)
+
+The owner prioritized Nebius Token Factory + NVIDIA Nemotron after requesting publication of
+the pending state. That documentation was committed/pushed as `442cb0f`. **Milestone 1 remains
+implemented, tested but not fully confirmed; Milestone 2 has not started.** Hermes follows as a
+separate runtime-integration workstream.
+
+### Implemented integration
+
+- `PROVIDER=nebius` selects the existing gateway, shared conversational runtime, domain tools,
+  PostgreSQL persistence, scheduler and trace machinery. No model download, GPU, schema migration
+  or second runtime is introduced.
+- Explicit `NEBIUS_API_KEY`/`NEBIUS_MODEL` configuration, official endpoint default, isolated
+  reasoning/price settings, bearer auth, bounded requests and native tool calls. No credential,
+  model or price fallback to Azure. `store=false` and `service_tier=default` are explicit.
+- Nebius nullable tool-call responses are accepted; truncated/filtered or reasoning-only empty
+  outputs are rejected. Local tool-schema definitions are inlined for nested-object visibility.
+  Model output types and domain validation remain strict.
+- `app.nebius_check` provides authenticated model discovery and a maximum two-call synthetic
+  text/native-tool preflight. `tests/live_semantic_smoke.py` now supports both providers and saves
+  separate, uniquely named private reports including model/token/latency evidence.
+- Cloud preparation supports `refresh --provider nebius` (or `azure_openai` rollback), exports
+  only the selected provider settings, and preserves the authorized trial window. Authenticated
+  runtime inspection and response traces identify the provider/model.
+- Actual transcript review found a correct persisted schedule accompanied by a stale predicted
+  next-check time. Reminder acknowledgements now rely on backend-grounded schedule receipts;
+  a regression test deliberately supplies a wrong model date and verifies it is not shown.
+
+### Tests and real-service evidence
+
+**585 backend tests passed in 183.59s** after the final reminder-wording fix; Ruff and mypy
+passed (39 app modules). The new provider tests use a **fake model HTTP endpoint** with the real
+subprocess transport, PostgreSQL/runtime, worker and duplicate-event checks. Cloud Secret preparation
+is tested against temporary files, including unchanged window bytes and credential separation.
+Frontend code was unchanged; the previously recorded 69 frontend tests were not rerun for this slice.
+
+Credentials were initially absent, then authenticated discovery succeeded during this session.
+The list included Lightning, Super-VL, Ultra and the retiring Nano/Super IDs. Both Lightning and
+Super-VL passed the real two-call native-tool preflight. No operational tool was executed by that
+preflight. The selected integrated candidate is:
+
+```dotenv
+PROVIDER=nebius
+NEBIUS_MODEL=nvidia/Nemotron-3.5-Super-VL
+NEBIUS_REASONING_EFFORT=low
+MODEL_MAX_OUTPUT_TOKENS=1200
+MODEL_TIMEOUT_SECONDS=15
+```
+
+Against the fresh local `mica_nebius_verified_smoke_test` database at schema `0014`, the real
+Nebius API completed all six scenarios through the actual HTTP app, including two unrelated
+turns and an API restart before proposal acceptance, retained missing-time clarification,
+one-time/480-second recurring plans and two real worker sweeps producing exactly two due effects
+with no duplicates. The exact punctuationless interruption also passed, with no vocabulary grading.
+The 11 main turns plus one variant used **12 inference calls**, **154,967 input tokens** and
+**4,421 output tokens** total. Main-run call latency ranged from **2.680 to 7.340 seconds**.
+Prices were not configured, so dollar cost is **unknown**, not zero. These totals exclude earlier
+candidate/debug runs and preflights.
+
+Private successful reports:
+- `.local/rollouts/semantic-integration/live-nebius-results-4120a2cc.json`
+- `.local/rollouts/semantic-integration/live-nebius-variant-09a9240f.json`
+
+The main functional smoke preceded the final grounded-confirmation change; its stale-time wording
+is retained in that report. The targeted transport/application regression verifies the correction,
+and the variant plus full regression suite ran on the final source. All live inputs were synthetic
+in isolated local databases; channel credentials were blank. No production conversation was sent
+to Nebius and no production Telegram send was used for this integration test.
+
+### Failures retained and current limits
+
+- Lightning initially stringified a nested time object; inlining schema references improved that
+  case, but its next run attempted the wrong immediate update instead of staging the requested offer.
+- Super-VL with reasoning disabled omitted the requested persistent vocabulary start. Low reasoning
+  plus clearer activity/tool instructions progressed farther; subsequent failures exposed a string
+  `"None"` and an omitted proposal `action` field. Explicit JSON/target-schema instructions addressed
+  these without relaxing validation or inventing missing user details.
+- One run stopped solely because an otherwise supportive response lacked `?`. The harness now
+  retains wording for human review and checks nonempty output/no quiz pivot instead of punctuation;
+  persistence, timing, proposal execution and duplicate-effect assertions remain intact.
+- Failed private reports are retained as `live-nebius-results-026e3761.json`, `aea5b4a7.json`,
+  `07f52608.json`, `48dcc181.json`, `01d37482.json`, and `e77ce8c8.json` (same full filename prefix).
+  A passing run does not erase these failures or establish longitudinal reliability.
+
+**Deployment state:** the owner trial remains on the previously deployed Azure revision `c4137ec`
+with the November 3 cutoff. Nebius integration has not been activated in that trial. The next gate
+is controlled deployment of the tested profile and owner-channel verification, with Azure retained
+for rollback. Setup, model deprecation details and reproduction commands: [NEBIUS.md](NEBIUS.md).
+
 ## Owner-authorized Edge IMCI artifact cleanup — 2026-10-30 02:20–02:21 UTC
 
 The owner explicitly authorized clearing the two previously inspected heavy artifact volumes.

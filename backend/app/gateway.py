@@ -25,6 +25,7 @@ MAX_WORKER_INPUT_BYTES = 1024 * 1024
 MAX_CONTENT_CHARS = 32 * 1024
 MAX_ARGUMENT_CHARS = 16 * 1024
 MAX_TOOL_CALLS = 16
+NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 
 ErrorCode = Literal[
     "invalid_config", "invalid_request", "unavailable", "invalid_response", "response_too_large"
@@ -118,6 +119,33 @@ def _tool_calls(value: Any, *, enabled: bool) -> list[dict[str, Any]]:
     return calls
 
 
+def _inline_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Expose nested Pydantic object types directly to the Nebius tool template.
+
+    Only local JSON-Schema definitions are resolved. Domain validation is unchanged;
+    stringified objects returned by a model are still invalid tool arguments.
+    """
+    definitions = schema.get("$defs", {})
+
+    def expand(value, seen):
+        if isinstance(value, list):
+            return [expand(item, seen) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$ref" in value:
+            ref = value["$ref"]
+            if not isinstance(ref, str) or not ref.startswith("#/$defs/") or ref in seen:
+                raise ValueError("Unsupported schema reference")
+            name = ref.removeprefix("#/$defs/")
+            if name not in definitions:
+                raise ValueError("Unknown schema reference")
+            target = {**definitions[name], **{k: v for k, v in value.items() if k != "$ref"}}
+            return expand(target, seen | {ref})
+        return {key: expand(item, seen) for key, item in value.items() if key != "$defs"}
+
+    return expand(schema, set())
+
+
 @dataclass(frozen=True)
 class OpenAICompatibleGateway:
     """Use a versioned base URL, e.g. https://example.com/v1.
@@ -125,7 +153,7 @@ class OpenAICompatibleGateway:
     MODEL_MAX_OUTPUT_TOKENS defaults to 600 (maximum 1200).
     MODEL_TIMEOUT_SECONDS defaults to 15 (maximum 15).
     Each complete call uses a killable worker to enforce a wall-clock deadline.
-    PROVIDER supports openai_compatible and azure_openai. Prices are USD per million.
+    PROVIDER supports openai_compatible, azure_openai and nebius. Prices are USD per million.
     HTTP is permitted only for loopback with APP_ENV=development/dev/test.
     """
 
@@ -170,7 +198,7 @@ class OpenAICompatibleGateway:
                         and self.app_env in {"dev", "development", "test"}
                     )
                 )
-                or self.provider not in {"openai_compatible", "azure_openai"}
+                or self.provider not in {"openai_compatible", "azure_openai", "nebius"}
                 or not self.api_key
                 or any(ord(char) <= 32 or ord(char) >= 127 for char in self.api_key)
                 or not self.model.strip()
@@ -215,19 +243,26 @@ class OpenAICompatibleGateway:
                         "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_API_VERSION")
                 imported = dotenv_values(source, interpolate=False)
                 azure = {key: values.get(key) or imported.get(key) for key in keys}
-            input_price = values.get("MODEL_INPUT_COST_PER_MILLION")
-            output_price = values.get("MODEL_OUTPUT_COST_PER_MILLION")
+            # Switching provider must not reuse Azure/generic credentials, model or prices.
+            prefix = "NEBIUS" if provider == "nebius" else "MODEL"
+            input_price = values.get(f"{prefix}_INPUT_COST_PER_MILLION")
+            output_price = values.get(f"{prefix}_OUTPUT_COST_PER_MILLION")
             return cls(
                 base_url=(azure.get("AZURE_OPENAI_ENDPOINT") or "")
-                if provider == "azure_openai" else values["MODEL_BASE_URL"],
+                if provider == "azure_openai" else (
+                    values.get("NEBIUS_BASE_URL", NEBIUS_BASE_URL)
+                    if provider == "nebius" else values["MODEL_BASE_URL"]
+                ),
                 api_key=(azure.get("AZURE_OPENAI_API_KEY") or "")
-                if provider == "azure_openai" else values["MODEL_API_KEY"],
+                if provider == "azure_openai" else values[f"{prefix}_API_KEY"],
                 model=(azure.get("AZURE_OPENAI_DEPLOYMENT") or "")
-                if provider == "azure_openai" else values["MODEL_NAME"],
+                if provider == "azure_openai" else values[
+                    "NEBIUS_MODEL" if provider == "nebius" else "MODEL_NAME"
+                ],
                 provider=provider,
                 api_version=azure.get("AZURE_OPENAI_API_VERSION")
                 if provider == "azure_openai" else None,
-                reasoning_effort=values.get("MODEL_REASONING_EFFORT") or None,
+                reasoning_effort=values.get(f"{prefix}_REASONING_EFFORT") or None,
                 max_output_tokens=int(values.get("MODEL_MAX_OUTPUT_TOKENS", "600")),
                 timeout_seconds=float(values.get("MODEL_TIMEOUT_SECONDS", "15")),
                 input_cost_per_million=float(input_price) if input_price is not None else None,
@@ -342,13 +377,22 @@ class OpenAICompatibleGateway:
                     else "max_tokens"] = self.max_output_tokens
             if self.reasoning_effort is not None:
                 payload["reasoning_effort"] = self.reasoning_effort
+            if self.provider == "nebius":
+                payload["store"] = False
+                # Do not opt into the provider's automatically selected over-limit tier.
+                payload["service_tier"] = "default"
             if tools:
                 payload["tools"] = tools
-            elif self.provider == "azure_openai":
-                # Azure rejects tool_choice, including "none", without a tools list.
+            elif self.provider in {"azure_openai", "nebius"}:
+                # No tool selection parameter is needed when no tools are offered.
                 payload.pop("tool_choice")
             # Validate and detach the snapshot from mutable caller-owned messages.
             result: dict[str, Any] = json.loads(json.dumps(payload, allow_nan=False))
+            if self.provider == "nebius":
+                for tool in result.get("tools", []):
+                    function = tool.get("function", {})
+                    if "parameters" in function:
+                        function["parameters"] = _inline_tool_schema(function["parameters"])
             return result
         except (ValueError, TypeError, OverflowError, RecursionError):
             raise GatewayError("invalid_request") from None
@@ -417,12 +461,22 @@ class OpenAICompatibleGateway:
             message = choice["message"]
             if message.get("role") != "assistant":
                 raise ValueError
+            if self.provider == "nebius" and choice.get("finish_reason") in {
+                "length", "content_filter"
+            }:
+                # A syntactically valid but truncated tool request must not mutate state.
+                raise ValueError
             model = _text(body.get("model"), 256, nonempty=True)
-            tool_calls = _tool_calls(message.get("tool_calls", []), enabled=bool(tools))
+            calls = message.get("tool_calls", [])
+            if self.provider == "nebius" and calls is None:
+                calls = []  # Explicit null is documented for ordinary Nebius responses.
+            tool_calls = _tool_calls(calls, enabled=bool(tools))
             content = message.get("content")
             if content is None and tool_calls:
                 content = ""
             content = _text(content, MAX_CONTENT_CHARS)
+            if self.provider == "nebius" and not content.strip() and not tool_calls:
+                raise ValueError  # Do not expose reasoning-only output as a successful answer.
             usage = body.get("usage")
             if usage is None:
                 usage = {}

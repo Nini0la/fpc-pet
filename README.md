@@ -34,6 +34,9 @@ behavior. Older responses without captures are labeled honestly; snapshots begin
 fresh-session recall, corrected-memory use, and feedback adaptation were exercised with
 synthetic data. Automated regression tests still use scripted responses or a loopback server.
 See [Azure configuration](docs/AZURE_OPENAI.md).
+For the selectable Nebius Token Factory/NVIDIA Nemotron integration, model discovery,
+bounded preflight and isolated acceptance commands, see [Nebius configuration](docs/NEBIUS.md).
+Its live-verification status is recorded separately from the Azure baseline.
 `MODEL_MODE=deterministic` preserves the existing development/test behavior and is clearly labeled
 in the UI. Delegated follow-through uses the separate operations worker; public registration and
 claims of improved intelligence remain outside the implemented scope.
