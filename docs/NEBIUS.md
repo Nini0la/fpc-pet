@@ -52,7 +52,8 @@ NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
 `PROVIDER=nebius` and `MODEL_MODE=live` select it for a backend process. `NEBIUS_API_KEY` and
 `NEBIUS_MODEL` are required. Selecting Nebius never falls back to Azure/generic credentials,
 model names, reasoning settings or prices. Missing prices are reported as unknown, not zero.
-The shared limits remain at most **1,200 output tokens** and **15 seconds per inference call**;
+The Nebius output ceiling is **2,400 tokens** (the owner trial retains its 1,200-token setting)
+with **15 seconds per inference call**;
 configure `MODEL_MAX_OUTPUT_TOKENS` and `MODEL_TIMEOUT_SECONDS` within those bounds. Do not
 raise these limits merely to hide failed reasoning/tool compatibility: measure first.
 
