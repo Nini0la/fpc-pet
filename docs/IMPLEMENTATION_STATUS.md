@@ -2,6 +2,11 @@
 
 ## Nebius/Nemotron integration — implemented and live-tested in isolation (2026-10-30)
 
+**Published implementation:** `8e25def6f541af6274fc395a8e6fc585e97bd702` on
+`feat/functional-autonomy`. GitHub CI passed for backend and frontend, including dependency
+audits, lint/type checks and the frontend build:
+https://github.com/Nini0la/fpc-pet/actions/runs/40995602852.
+
 The owner prioritized Nebius Token Factory + NVIDIA Nemotron after requesting publication of
 the pending state. That documentation was committed/pushed as `442cb0f`. **Milestone 1 remains
 implemented, tested but not fully confirmed; Milestone 2 has not started.** Hermes follows as a
@@ -34,7 +39,8 @@ separate runtime-integration workstream.
 passed (39 app modules). The new provider tests use a **fake model HTTP endpoint** with the real
 subprocess transport, PostgreSQL/runtime, worker and duplicate-event checks. Cloud Secret preparation
 is tested against temporary files, including unchanged window bytes and credential separation.
-Frontend code was unchanged; the previously recorded 69 frontend tests were not rerun for this slice.
+Frontend code was unchanged; frontend tests/build were rerun by the passing CI above rather than
+repeated locally.
 
 Credentials were initially absent, then authenticated discovery succeeded during this session.
 The list included Lightning, Super-VL, Ultra and the retiring Nano/Super IDs. Both Lightning and
