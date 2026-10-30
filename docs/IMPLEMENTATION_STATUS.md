@@ -1,5 +1,17 @@
 # Implementation Status
 
+## Submission provenance clarification
+
+The owner clarified that the original working repository was created for Mica itself, rather
+than for an unrelated pre-existing application. GitHub reports its creation as September 30,
+2026; the earliest recorded specification/implementation commits are also September 30, within
+the August 26–October 30 eligibility period. The submission repository was created October 30.
+Updated the public README and its source copy with this distinction, a dated development outline,
+links to original commit history, and an explicit explanation of how hosted Token Factory
+inference avoided GPU/model-server setup and accelerated integration. Corrected the accompanying
+Devpost draft's ambiguous pre-existing-prototype wording. Documentation-only; `git diff --check`
+is the relevant verification, with no application or deployment change.
+
 ## Final hackathon submission mission — October 30, 2026
 
 **Final engineering handoff:** Gates A, B and C passed on the deployed judge service; Gate D's
