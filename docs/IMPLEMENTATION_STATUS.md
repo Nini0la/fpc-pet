@@ -2,6 +2,38 @@
 
 ## Final hackathon submission mission — October 30, 2026
 
+**Final engineering handoff:** Gates A, B and C passed on the deployed judge service; Gate D's
+public code/docs/testing/video-support package is prepared. Public repository:
+**https://github.com/Nini0la/mica**, MIT license detected, main branch. Deployed public runtime
+**`a10ecc6f621c954219a6b1d743f7b6af66176bfc`**, CI passed:
+https://github.com/Nini0la/mica/actions/runs/41051112753. The development source is preserved on
+`feat/functional-autonomy` (`191f32d`, then bounded-budget/security-fixture correction `51949cb`).
+
+Final verification at 12:02 UTC confirmed public HTTPS, the exact Nebius/NVIDIA provider/model,
+fresh-browser authentication, create/amend, source-bearing research commitment and browser-closed
+reminder delivery. Action `b89b6819-af65-4a7c-84be-3545743f94e6` delivered once; Tavily Search
+`835b67d3-a1f6-49fa-a2e1-c64d85469510` and Extract `bb4458ab-4dae-4a30-8cba-83575eaa0f6f`
+were genuine runtime calls. Final dataset is `mica_judge_submission`; engineering data is retained
+in `mica_judge_demo`. Private table reads remain denied to the restricted judge role. Live origin,
+CSRF, unauthenticated access and external-action blocking checks passed.
+
+**604 backend tests**, **69 frontend tests**, lint/type checks, audit, static build and public CI
+passed. The final judge profile uses a bounded **2,400-token** Nebius output allowance: a verified
+research tool-selection turn used 1,402 output tokens, exceeding the earlier 1,200 ceiling. The
+15-second call deadline and two-call/turn limit remain. The private owner trial stays on its
+previous pinned release/configuration and was checked healthy at 12:01 UTC.
+
+Publication used an allowlisted clean snapshot (169 audited source/doc files plus a source manifest),
+excluding private environments, rollout/financial records, original specification ZIP and unrelated
+product materials/history. Exact configured-secret comparison found no matches. GitHub initially
+flagged synthetic Stripe/Slack credential-detection fixtures; these were assembled at runtime,
+their 11 security tests passed, and a new clean root commit was published without bypassing push
+protection, amending the rejected snapshot or force-pushing. The rejected local snapshot is retained.
+
+Judge credentials and full browser/security reports are in ignored `.local/rollouts/judge-demo/`.
+Public handoff material is in `docs/submission/` and at the public repository root. **Video recording,
+public YouTube upload and final Devpost submission remain the owner's outstanding actions.**
+
 Official rules verified at https://nebiusglobalaihackathon.devpost.com/rules:
 deadline **18:00 WAT / 17:00 UTC October 30**; judging ends **December 23, 20:00 UTC**.
 The current mission is the owner's explicitly authorized isolated public judge demonstration
@@ -28,9 +60,9 @@ and submission package, not a Milestone 2 expansion or owner acceptance of Miles
   caveats are in `docs/submission/EVIDENCE.md`. An initial missing runtime `httpx` dependency and
   overly long/mixed-source synthesis were corrected; evidence-only synthesis excludes old research
   replies and preserves the same NVIDIA model/provider.
-- **Gate D in progress:** MIT license, curated public README, setup/deployment/recovery, judge
+- **Gate D package prepared:** MIT license, curated public README, setup/deployment/recovery, judge
   instructions, official rules, Devpost text and a 2:50 video sequence are prepared under
-  `docs/submission/`. A clean public source snapshot is being audited to exclude personal rollout
+  `docs/submission/`. A clean public source snapshot was audited to exclude personal rollout
   artifacts, billing records, credentials and the original specification ZIP.
 
 **Checks:** 603 backend tests passed in 123.87s, Ruff/mypy passed (41 modules); 69 frontend tests,
