@@ -60,6 +60,8 @@ def worker():
     from app.telegram_worker import run_once
 
     if not active():
+        if datetime.now(timezone.utc) >= datetime.fromisoformat(os.environ["MICA_TRIAL_END_AT"]):
+            expire.spawn()
         return {"status": "inactive"}
     sessions = guarded_sessions()
     scheduled = tick(sessions, AgentRuntime())
@@ -199,7 +201,7 @@ def inspect(case: str | None = None):
 stop_image = modal.Image.debian_slim(python_version="3.11").pip_install("modal==1.5.4")
 
 
-@app.function(image=stop_image, secrets=[window_secret], schedule=modal.Period(minutes=1),
+@app.function(image=stop_image, secrets=[window_secret],
               timeout=45, cpu=(0.125, 0.25), memory=(128, 256), max_containers=1, retries=0)
 def expire():
     import subprocess
