@@ -671,7 +671,7 @@ def workflow(db, owner, args: ManageWorkflow, source, now, event_id):
             "context": {
                 "started": changed,
                 "state": prompt.workflow_state,
-                "prompt": prompt.prompt,
+                "prompt": EveningReflectionSkill.checkin,
                 "activity": "reflection",
                 "action": "start",
             },

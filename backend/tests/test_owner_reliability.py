@@ -12,7 +12,15 @@ from test_semantic_conversation import scene as scene
 from app.commitments import describe, utc
 from app.context import build_context
 from app.gateway import GatewayError
-from app.models import Commitment, ConversationProposal, Message, ReminderPlan, User
+from app.models import (
+    Commitment,
+    ConversationProposal,
+    JournalEntry,
+    Message,
+    ReflectionPrompt,
+    ReminderPlan,
+    User,
+)
 from app.presentation import confirmation
 
 
@@ -188,3 +196,19 @@ def test_date_only_request_does_not_authorize_a_guessed_clock(pg_client, scene):
     with main.SessionLocal() as db:
         assert utc(db.scalar(select(ReminderPlan)).due_at) == datetime(
             2026, 11, 7, 9, tzinfo=timezone.utc)
+
+
+def test_conversational_reflection_start_uses_actual_skill_prompt(pg_client, scene):
+    main, gateway = scene
+    answer = act(pg_client, gateway, "start-reflection", "Can we do my evening reflection?",
+                 "manage_workflow", {"kind": "reflection", "action": "start"})
+    assert answer["content"] == "How did things go today?"
+    with main.SessionLocal() as db:
+        prompt = db.scalar(select(ReflectionPrompt))
+        identifier, version = prompt.id, prompt.version
+    answer = act(pg_client, gateway, "tiring-day", "Tiring day.", "manage_workflow",
+        {"kind": "reflection", "action": "respond", "id": identifier, "version": version,
+         "summary": "The owner reported a tiring day."})
+    assert "reflection for" in answer["content"]
+    with main.SessionLocal() as db:
+        assert db.scalar(select(JournalEntry)).original_content == "Tiring day."
