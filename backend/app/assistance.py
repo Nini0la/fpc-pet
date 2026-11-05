@@ -185,7 +185,10 @@ TOOL_DESCRIPTIONS = {
     "and expected completion evidence. This does NOT authorize or send contact. The owner must "
     "review and authorize the plan in Today → Delegated responsibilities. Never guess a phone "
     "number or deadline; ask if missing. Configure a separate assistant channel first.",
-    "schedule_reminder": "Schedule a requested personal reminder. mode=once sends once; "
+    "schedule_reminder": "Retain EVERY explicit reminder request before asking for missing timing. "
+    "Time is optional: a date-only when (kind=local, date provided, at omitted), or no when, "
+    "saves a pending clarification without scheduling a delivery. Call this tool first, then ask "
+    "the returned question. With confirmed timing, schedule the reminder. mode=once sends once; "
     "mode=recurring is a bounded accountability check-in. Translate time semantically to when: "
     "after+seconds or local+at HH:MM with optional date. A time without a date means its next "
     "occurrence in the owner's timezone. For recurring, when can be omitted: first check is one "
@@ -772,6 +775,8 @@ Change an existing reminder/check-in with update_reminder; do not create an addi
 the owner asks to switch its interval or timing. Propose that update when waiting for approval.
 If a reminder request genuinely lacks its time, call schedule_reminder with when omitted so its
 topic/parameters are retained before asking. Do not keep a missing-parameter request only in prose.
+For a request by/on a named date with no clock, call schedule_reminder with that date and no at.
+Do not just ask 'what time?' in a text-only response: the pending request must first be retained.
 When offering an action/alternative, persist it with propose_action in the SAME turn before offering
 it. The proposal does not execute. Use resolve_proposal for later acceptance or clarification, using
 stored parameters plus new changes. Respect interruptions, pause/cancel and later resumption;
