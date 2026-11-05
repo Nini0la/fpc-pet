@@ -85,6 +85,11 @@ def matching_mentions(db, owner, terms, recent_ids, cutoff):
                 "evidence_kind": "conversational_mention_not_a_saved_commitment",
             }
         )
+        from .recovery import request_evidence
+
+        recovery = request_evidence(db, owner, message, include_text=False)
+        if recovery:
+            result[-1]["recovery"] = recovery
         if len(result) == 3:
             break
     return result
@@ -127,9 +132,10 @@ def current_target(db, owner, result):
         )
         journal = db.get(JournalEntry, row.journal_entry_id) if row.journal_entry_id else None
         if journal and journal.user_id == owner and not journal.deleted:
-            data["current_reflection"] = (journal.corrected_content or journal.original_content)[
-                :350
-            ]
+            data["current_reflection"] = (
+                journal.corrected_content if journal.corrected_content is not None
+                else journal.original_content
+            )[:350]
     elif isinstance(row, VocabularyAttempt):
         data.update(activity="vocabulary", prompt=row.prompt[:200])
     elif isinstance(row, ConversationProposal) and row.result:
@@ -165,7 +171,13 @@ def recent_operations(db, owner, cutoff):
                     "current_record": current_target(db, owner, result),
                 }
             )
-        if outcomes or run.execution_status == "failed":
+        if outcomes or run.execution_status in {
+            "failed", "limited", "rejected", "awaiting_clarification",
+        }:
+            from .recovery import preceding_source, request_evidence
+
+            source_request = request_evidence(
+                db, owner, preceding_source(db, owner, run.message_id))
             entries.append(
                 {
                     "id": run.id,
@@ -175,6 +187,9 @@ def recent_operations(db, owner, cutoff):
                     "response_status": run.execution_status,
                     "persisted_turn": True,
                     "operation_outcomes": outcomes,
+                    **({"source_request": source_request} if source_request else {}),
+                    "failure": next((u.get("error") for u in reversed(run.usage or [])
+                                     if u.get("error")), None),
                     "interpretation": "These outcomes belong to a persisted turn; "
                     "Current state may have changed. "
                     "Model response failure does not undo saved actions.",

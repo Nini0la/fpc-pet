@@ -64,7 +64,7 @@ from .responsibilities import DelegationIn, create_draft
 from .tracing import ResponseTrace
 
 MAX_MODEL_CALLS = 2
-MAX_TOOL_CALLS = 2
+MAX_TOOL_CALLS = 4
 MAX_OPERATION_SECONDS = 35
 THREAD_FIELDS = (
     "intention_context",
@@ -220,7 +220,7 @@ TOOL_DESCRIPTIONS = {
 
 
 def tool_schemas(allow_write: bool) -> list[dict[str, Any]]:
-    def parameters(schema):
+    def parameters(name, schema):
         result = schema.model_json_schema()
         result["properties"]["response_text"] = {
             "type": "string",
@@ -229,6 +229,13 @@ def tool_schemas(allow_write: bool) -> list[dict[str, Any]]:
             "Empty when wording needs the returned data.",
         }
         result["required"] = [*result.get("required", []), "response_text"]
+        if name in {"create_commitment", "update_commitment", "save_project", "save_idea",
+                    "update_thread", "schedule_reminder", "update_reminder", "manage_workflow"}:
+            result["properties"]["request_source_id"] = {
+                "type": "string",
+                "description": "Only for an owner-requested retry: the original source_message_id "
+                               "from recovery evidence with no recorded effects. Otherwise omit.",
+            }
         return result
 
     return [
@@ -237,7 +244,7 @@ def tool_schemas(allow_write: bool) -> list[dict[str, Any]]:
             "function": {
                 "name": name,
                 "description": TOOL_DESCRIPTIONS[name],
-                "parameters": parameters(schema),
+                "parameters": parameters(name, schema),
             },
         }
         for name, schema in TOOL_INPUTS.items()
@@ -249,6 +256,55 @@ def tool_schemas(allow_write: bool) -> list[dict[str, Any]]:
 
 
 def execute_tool(
+    db: Session, user_id: str, name: str, arguments: str, *, allow_write: bool,
+    source_id: str, text: str, now: datetime, context: dict[str, Any], allowed_ids: set[str],
+    event_id: str | None = None, reference_time: datetime | None = None, continuing: bool = False,
+) -> dict[str, Any]:
+    from .recovery import record_recovery, recovery_source, retain_failed_call
+
+    original_source = None
+    authorization_source = source_id
+    try:
+        values = json.loads(arguments)
+        if not isinstance(values, dict):
+            raise ValueError
+    except (ValueError, TypeError):
+        return {"status": "rejected", "reason": "invalid_arguments"}
+    recovery_id = values.pop("request_source_id", None)
+    if recovery_id:
+        if not allow_write:
+            return {"status": "rejected", "reason": "write_permission_required"}
+        if not event_id or name not in {
+            "create_commitment", "update_commitment", "save_project", "save_idea",
+            "update_thread", "schedule_reminder", "update_reminder", "manage_workflow",
+        }:
+            return {"status": "rejected", "reason": "invalid_recovery"}
+        try:
+            original_source = recovery_source(db, user_id, recovery_id, context, event_id)
+        except ValueError as error:
+            return {"status": "rejected", "reason": "invalid_recovery", "question": str(error)}
+        source_id, text = original_source.id, original_source.content
+        reference_time = message_time(db, source_id, now)
+        if isinstance(values.get("when"), dict) and values["when"].get("anchor") == "acceptance":
+            reference_time = message_time(db, authorization_source, now)
+    try:
+        with db.begin_nested():
+            result = _execute_tool(db, user_id, name, json.dumps(values), allow_write=allow_write,
+                source_id=source_id, text=text, now=now, context=context, allowed_ids=allowed_ids,
+                event_id=event_id, reference_time=reference_time, continuing=continuing,
+                recovery_at=now if original_source else None)
+    except Exception as error:
+        result = {"status": "rejected", "reason": "tool_failed", "error_type": type(error).__name__,
+                  "question": "That operation didn't finish. Your request is still here."}
+    if allow_write and not continuing and name in TOOL_INPUTS:
+        result = retain_failed_call(db, user_id, name, values, result, source_id, now,
+                                    TOOL_INPUTS[name].model_fields)
+    if original_source:
+        record_recovery(db, user_id, result, original_source, authorization_source, event_id, now)
+    return result
+
+
+def _execute_tool(
     db: Session,
     user_id: str,
     name: str,
@@ -263,6 +319,7 @@ def execute_tool(
     event_id: str | None = None,
     reference_time: datetime | None = None,
     continuing: bool = False,
+    recovery_at: datetime | None = None,
 ) -> dict[str, Any]:
     """No ownership, SQL, external URLs or permissions are accepted from the model."""
     if name not in TOOL_INPUTS:
@@ -330,6 +387,7 @@ def execute_tool(
             now,
             reference=reference_time,
             store_missing=not continuing,
+            recovery_at=recovery_at,
         )
     if isinstance(args, ChangeReminder):
         return change_plan(db, user_id, args, source_id, now)
@@ -636,6 +694,14 @@ is retrieved, say you cannot find it in the available context, not that the user
 recent_operations records persisted turns and their real tool outcomes, with current target state.
 Use this evidence to explain what was saved/changed even if response generation failed. A proposed
 action, saved record, scheduled check, executed action and provider delivery are different states.
+Failed/limited turns can include source_request, and historical mentions can include recovery.
+If the owner asks to retry, reuse the original request instead of asking them to reconstruct it.
+Use request_source_id only when that evidence has no recorded effects or pending proposals;
+otherwise resolve the pending proposals and never repeat successful actions. Original relative
+times retain their original source timestamp; a new delay explicitly requested now uses acceptance.
+For compound requests, account for each clause. Mere intentions can remain mentioned or proposed;
+an explicit reminder may be scheduled only when its time is sufficiently clear. Never claim the
+whole message was completed when only some effects have receipts. Omit unused optional arguments.
 Merely mentioning an intention is not a request to create a commitment. Discuss it naturally;
 save a commitment only on a clear request or acceptance. If offering a specific action for approval,
 first call propose_action in this turn. In particular, 'offer to track this; ask before saving'
@@ -655,6 +721,12 @@ timestamp and owner timezone. Retain source wording; do not invent an unspecifie
 Use due_local and due_bound from receipts when explaining a saved deadline. 'Exclusive' means
 before that boundary, not an invented deadline one minute earlier. Report next_check_at honestly.
 Use deadline_display for existing records; never repeat old 'tomorrow' hints as current deadlines.
+Titles are historical labels, never scheduling authority. title_recorded_at dates that wording;
+when due_at is absent, say no structured deadline is saved even if a title says 'tomorrow'.
+Do not infer or persist a date from an old title. Historical mentions use their source time.
+For completion reported retrospectively, preserve the user's literal timing in completion_time_text
+(for example 'days ago'). completed_at records when the report was saved, not when work happened.
+An already_completed result is a read, not a new completion; do not claim you changed it again.
 Keep the overall goal in title/completion_criteria, the owner's reason in purpose, the ordered plan
 in completion_criteria/constraints, and only the next actionable step in next_action.
 Finishing one step does not complete later steps.
@@ -753,7 +825,7 @@ Do not invent a deadline or submit an application.
 At most one research_goal invocation per user turn; no background research is authorized.
 Feedback is a user report, not proof
 that you caused an outcome or became more intelligent. Do not expose hidden reasoning.
-At most two tool calls and two model calls are available.
+At most four tool calls and two model calls are available.
 After a tool action, acknowledge only its actual outcome. Internal receipts, UUIDs, versions and
 diagnostic codes belong in Context Inspector, never ordinary chat. Do not copy legacy receipt
 formatting from old assistant messages. A short emotional disclosure needs empathy, not a forced
@@ -810,7 +882,7 @@ def contextual_reply(
         created_at=now,
         related_thread_id=context.related_thread_id,
         related_commitment_id=context.related_commitment_id,
-        context_manifest=context.manifest,
+        context_manifest={**context.manifest, "source_message_id": source_id},
         policy=policy,
         intervention_type="contextual_help",
         execution_status="attempted",
@@ -848,7 +920,7 @@ def contextual_reply(
             {
                 key: value
                 for key, value in asdict(first).items()
-                if key not in {"content", "tool_calls"}
+                if key not in {"content", "tool_calls", "diagnostics"}
             }
         )
         if len(first.tool_calls) > MAX_TOOL_CALLS:
@@ -886,7 +958,9 @@ def contextual_reply(
                 try:
                     wording = json.loads(call["function"]["arguments"]).get("response_text", "")
                     effect = result.get("execution") or result
-                    if effect.get("kind") == "proposal" and effect.get("status") in {
+                    if effect.get("already_completed"):
+                        natural_replies.append(confirmation(result))
+                    elif effect.get("kind") == "proposal" and effect.get("status") in {
                         "proposed",
                         "updated",
                     }:
@@ -963,7 +1037,8 @@ def contextual_reply(
                     else "awaiting_clarification"
                 )
             elif natural_replies and not any(
-                item["status"] == "read" or item.get("requires_response_refresh")
+                (item["status"] == "read" and not item.get("already_completed"))
+                or item.get("requires_response_refresh")
                 for item in results
             ):
                 reply = "\n".join(dict.fromkeys(natural_replies))
@@ -1040,7 +1115,7 @@ def contextual_reply(
                     {
                         key: value
                         for key, value in asdict(final).items()
-                        if key not in {"content", "tool_calls"}
+                        if key not in {"content", "tool_calls", "diagnostics"}
                     }
                 )
                 if final.tool_calls:
@@ -1062,6 +1137,7 @@ def contextual_reply(
                 "input_tokens": None,
                 "output_tokens": None,
                 "cost_usd": None,
+                **({"diagnostics": error.diagnostics} if error.diagnostics else {}),
             }
         )
         run.execution_status = "failed"

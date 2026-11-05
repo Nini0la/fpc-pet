@@ -71,6 +71,58 @@ def exercise_migration(url):
     engine.dispose()
 
 
+def test_0016_releases_only_proven_non_deletion_resets(tmp_path):
+    from datetime import timedelta
+
+    from sqlalchemy.orm import Session
+
+    from app.context import build_context
+    from app.models import Commitment, ConversationSession, Message, Thread, User
+
+    url = f"sqlite:///{tmp_path}/recall-policy.db"
+    assert run_alembic(url, "upgrade", "0015").returncode == 0
+    engine = create_engine(url)
+    reset = datetime(2026, 11, 3, 13, tzinfo=timezone.utc)
+    ids = {}
+    with Session(engine) as db:
+        for name in ("corrected", "forgotten", "unknown"):
+            user = User(username=name, context_reset_at=reset, conversation_recall_after=reset)
+            db.add(user)
+            db.flush()
+            ids[name] = user.id
+            chat = ConversationSession(user_id=user.id)
+            db.add(chat)
+            db.flush()
+            db.add(Message(user_id=user.id, conversation_id=chat.id, role="user", actor="user",
+                ordinal=1, content="I need to write an essay for Cosmos Institute.",
+                created_at=reset - timedelta(days=4)))
+            if name != "unknown":
+                db.add(Commitment(user_id=user.id, title="Product submission", state="completed",
+                    completed_at=reset, last_touched_at=reset, confidence=1, derivation="fixture",
+                    version=2))
+            if name == "forgotten":
+                db.add(Thread(user_id=user.id, title="[deleted]",
+                              deleted=True, derivation="fixture"))
+        db.commit()
+        assert not build_context(db, ids["corrected"], "Cosmos essay", now=reset).payload[
+            "conversation_mentions"]
+    for _ in range(2):
+        assert run_alembic(url, "upgrade", "0016").returncode == 0
+        with Session(engine) as db:
+            assert db.get(User, ids["corrected"]).conversation_recall_after is None
+            for name in ("forgotten", "unknown"):
+                assert db.get(User, ids[name]).conversation_recall_after is not None
+                assert not build_context(db, ids[name], "Cosmos essay", now=reset).payload[
+                    "conversation_mentions"]
+            assert build_context(db, ids["corrected"], "Cosmos essay", now=reset).payload[
+                "conversation_mentions"][0]["content"].startswith("I need to write")
+        assert run_alembic(url, "downgrade", "0015").returncode == 0
+        with Session(engine) as db:
+            assert all(db.get(User, identifier).conversation_recall_after
+                       for identifier in ids.values())
+    engine.dispose()
+
+
 if __name__ == "__main__":
     import os
 

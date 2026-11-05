@@ -87,7 +87,21 @@ describe("Response context inspector", () => {
     failed.trace!.final_call_index = null;
     vi.mocked(globalThis.fetch).mockResolvedValue(json(failed));
     render(<ResponseContext messageId="failed" onClose={noop} onSessionExpired={noop}/>);
-    expect(await screen.findByText(/successful provider processing is not confirmed/)).toBeInTheDocument();
+    expect(await screen.findByText(/No complete usable response was accepted/)).toBeInTheDocument();
+  });
+
+  it("shows reported usage on a truncated response without exposing reasoning text", async () => {
+    const data=capture();
+    data.trace!.calls=[{...data.trace!.calls[0], status:"failed", error:"output_limit",
+      response:null, usage:null, diagnostics:{finish_reason:"length", input_tokens:13000,
+        output_tokens:1200, reasoning_tokens:1190}}];
+    data.trace!.final_call_index=null;
+    vi.spyOn(globalThis,"fetch").mockResolvedValue(json(data));
+    render(<ResponseContext messageId="failed" onClose={noop} onSessionExpired={noop}/>);
+    expect(await screen.findByText("Provider diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("13000")).toBeInTheDocument();
+    expect(screen.getByText("1190")).toBeInTheDocument();
+    expect(screen.getByText("No model output was recorded.")).toBeInTheDocument();
   });
 
   it("retries failed loading and expires on an unauthorized request", async () => {

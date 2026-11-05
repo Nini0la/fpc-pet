@@ -1,11 +1,33 @@
-"""Validate structured temporal interpretations; conversational meaning belongs to Azure."""
+"""Validate structured temporal interpretations from the configured conversational model."""
 
+import re
 from datetime import date as Date
 from datetime import datetime, time, timedelta, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def has_explicit_clock(text: str) -> bool:
+    """Evidence guard for an exact clock, not a general conversational intent router."""
+    if re.search(r"\b\d{1,2}:\d{2}\b|\b(noon|midnight)\b", text, re.I):
+        return True
+    if re.search(
+        r"\b(?:\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+        r"\s*(?:a\.?m\.?|p\.?m\.?)\b", text, re.I,
+    ):
+        return True
+    bare = re.search(r"\bat\s+(\d{1,2})(?![\d:])\b", text, re.I)
+    return bool(bare and (int(bare[1]) >= 13 or re.search(
+        r"\b(morning|afternoon|evening|tonight|night)\b", text, re.I)))
+
+
+def clock_question(text: str) -> str:
+    bare = re.search(r"\bat\s+(\d{1,2})(?![\d:])\b", text, re.I)
+    if bare and 1 <= int(bare[1]) <= 12:
+        return f"Do you mean {bare[1]} AM or {bare[1]} PM?"
+    return "What time should I remind you on that date?"
 
 
 class When(BaseModel):

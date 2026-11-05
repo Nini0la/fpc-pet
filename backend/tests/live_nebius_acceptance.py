@@ -51,7 +51,7 @@ def main():
     engine = create_engine(url)
     with Session(engine) as db:
         assert not db.scalar(select(func.count()).select_from(User)), "Use a fresh database"
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0015"
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0016"
     run = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = ROOT / ".local/rollouts/nebius-acceptance" / run
     directory.mkdir(parents=True, mode=0o700)

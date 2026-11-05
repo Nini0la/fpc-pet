@@ -17,6 +17,7 @@ type ModelCall = {
   usage: {model: string; input_tokens: number | null; output_tokens: number | null;
     cost_usd: number | null; latency_ms: number} | null;
   error: string | null;
+  diagnostics?: Record<string, string | number>;
 };
 type Execution = {after_call_index: number; tool_call_id: string; name: string;
   arguments: string; result: unknown};
@@ -66,6 +67,8 @@ function ContextData({message}: {message: InputMessage}) {
         })}</section>}
     {parsed.feedback != null && <section><h4>Previous assistance feedback</h4><Json value={parsed.feedback}/></section>}
     {parsed.conversation_state!=null&&<section><h4>Pending activities, proposals and reminder plans</h4><Json value={parsed.conversation_state}/></section>}
+    {parsed.conversation_mentions!=null&&<details><summary>Historical conversational mentions</summary><Json value={parsed.conversation_mentions}/></details>}
+    {parsed.recent_operations!=null&&<details><summary>Recorded operations and unfinished requests</summary><Json value={parsed.recent_operations}/></details>}
     <details><summary>Exact context message, including its wrapper</summary><Json value={message.content}/></details>
   </div>;
 }
@@ -84,12 +87,14 @@ function CallDetail({call, executions}: {call: ModelCall; executions: Execution[
       <div><dt>Provider</dt><dd>{call.provider ?? "Not recorded"}</dd></div>
       <div><dt>Model</dt><dd>{call.usage?.model ?? text(call.request.model ?? "Not reported")}</dd></div>
       <div><dt>Call status</dt><dd>{call.status}</dd></div>
-      <div><dt>Input tokens</dt><dd>{call.usage?.input_tokens ?? `≈ ${call.approximate_input_tokens} (character estimate)`}</dd></div>
-      <div><dt>Output tokens</dt><dd>{call.usage?.output_tokens ?? "Not reported"}</dd></div>
+      <div><dt>Input tokens</dt><dd>{call.usage?.input_tokens ?? call.diagnostics?.input_tokens ?? `≈ ${call.approximate_input_tokens} (character estimate)`}</dd></div>
+      <div><dt>Output tokens</dt><dd>{call.usage?.output_tokens ?? call.diagnostics?.output_tokens ?? "Not reported"}</dd></div>
+      {call.diagnostics?.reasoning_tokens!==undefined&&<div><dt>Reported reasoning tokens</dt><dd>{call.diagnostics.reasoning_tokens}</dd></div>}
       <div><dt>Latency</dt><dd>{call.elapsed_ms} ms</dd></div>
       <div><dt>Estimated cost</dt><dd>{call.usage?.cost_usd == null ? "Not configured / reported" : `$${call.usage.cost_usd.toFixed(6)}`}</dd></div>
     </dl>
-    {call.error && <p className="error">Call failed: {call.error}. These inputs were prepared for the attempt; successful provider processing is not confirmed.</p>}
+    {call.error && <p className="error">Call failed: {call.error}. No complete usable response was accepted for this call.</p>}
+    {call.diagnostics&&<details><summary>Provider diagnostics</summary><Json value={call.diagnostics}/></details>}
     {call.response&&call.response.tool_calls.length===0&&<p>No tool calls were requested on this model call.</p>}
     {sections.map(section => {
       const message = call.request.messages[section.message_index];

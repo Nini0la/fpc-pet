@@ -270,7 +270,8 @@ def save_proposal(db, owner, tool, title, arguments, source, now, *, state="prop
     }
 
 
-def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, store_missing=True):
+def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, store_missing=True,
+             recovery_at=None):
     user = db.get(User, owner)
     reference = reference or message_time(db, source, now)
     try:
@@ -303,9 +304,18 @@ def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, 
             when = When(kind="after", seconds=args.interval_seconds)
         if when is None:
             raise ValueError("When should I remind you?")
-        if when.bound == "exclusive":
+        if when.kind == "local" and when.at and store_missing:
+            from .temporal import clock_question, has_explicit_clock
+
+            original = db.get(Message, source)
+            if original and not has_explicit_clock(original.content):
+                args = args.model_copy(update={"when": when.model_copy(update={"at": None})})
+                raise ValueError(clock_question(original.content))
+        if when.bound == "exclusive" and when.at:
             raise ValueError("How long before that time should the reminder arrive?")
         due = resolve_when(when, reference, user.timezone)
+        if recovery_at and due <= utc(recovery_at):
+            raise ValueError("That earlier requested time has passed. What new time should I use?")
         if reference < message_time(db, source, now) and due <= message_time(db, source, now):
             raise ValueError("That proposed time has passed. What new time should I use?")
         if due < utc(now) - timedelta(days=1) or due > utc(now) + timedelta(days=366):
@@ -507,6 +517,12 @@ def resolve_proposal(db, owner, args: ResolveProposal, source, now, execute, sch
             "closed_proposal", "That proposal is already closed; it will not execute again."
         )
     before = row.state
+    if isinstance(args.changes.get("when"), dict) and args.changes["when"].get("at"):
+        from .temporal import clock_question, has_explicit_clock
+
+        original = db.get(Message, source)
+        if original and not has_explicit_clock(original.content):
+            return reject("time_not_confirmed", clock_question(original.content))
     proposed = row.arguments | args.changes
     for key in ("when", "deadline"):
         change = args.changes.get(key)
@@ -931,6 +947,8 @@ def conversation_state(db, owner, now, source_id=None):
                         "id",
                         "version",
                         "title",
+                        "title_recorded_at",
+                        "title_is_scheduling_authority",
                         "state",
                         "purpose",
                         "completion_criteria",

@@ -67,10 +67,14 @@ class ResponseTrace:
         except GatewayError as error:
             call["status"] = "failed"
             call["error"] = error.code
+            if error.diagnostics:
+                call["diagnostics"] = snapshot(error.diagnostics)
             raise
         else:
             call["status"] = "completed"
             call["response"] = snapshot({"content": reply.content, "tool_calls": reply.tool_calls})
+            if reply.diagnostics:
+                call["diagnostics"] = snapshot(reply.diagnostics)
             call["usage"] = {
                 "model": reply.model,
                 "input_tokens": reply.input_tokens,

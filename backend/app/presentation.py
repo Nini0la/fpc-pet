@@ -1,5 +1,6 @@
 """Natural confirmations from validated domain outcomes; technical receipts remain in trace."""
 
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -16,13 +17,17 @@ def confirmation(result):
         )
     if result.get("kind") == "proposal":
         effect = result.get("execution")
-        if effect and effect.get("status") in {"saved", "updated", "rejected"}:
+        if effect and effect.get("status") in {"saved", "updated"}:
             return confirmation(effect)
         state = result.get("context", {}).get("state")
         if state in {"paused", "cancelled"}:
             return f"I've {state} that proposed change."
         if state == "needs_clarification":
-            return result.get("question") or "I've kept that request. What details should I use?"
+            question = result.get("question") or (
+                "I've kept that request. What details should I use?")
+            return f"For “{result.get('context', {}).get('title', 'that request')}”: {question}"
+        if effect and effect.get("status") == "rejected":
+            return confirmation(effect)
         details = result.get("context", {})
         if details.get("tool_name") == "create_commitment":
             title = details.get("arguments", {}).get("title", details.get("title", "that plan"))
@@ -30,6 +35,9 @@ def confirmation(result):
         return "I've kept that suggestion for you to confirm; it hasn't been carried out."
     if result.get("kind") == "commitment":
         item = result["context"]
+        if result.get("already_completed"):
+            return (f"“{item['title']}” is already recorded as completed. "
+                    "No new completion was added.")
         action = result.get("action")
         verb = {
             "complete": "Completed",
@@ -38,7 +46,13 @@ def confirmation(result):
             "resume": "Resumed",
             "reopen": "Reopened",
         }.get(action, "Saved" if result["status"] == "saved" else "Updated")
-        answer = f"{verb} “{item['title']}”."
+        answer = (f"Marked “{item['title']}” as completed." if action == "complete"
+                  else f"{verb} “{item['title']}”.")
+        if action == "complete" and (item.get("completion_report") or {}).get("timing_text"):
+            report = item["completion_report"]
+            answer += f" You reported finishing it “{report['timing_text']}”."
+        elif item.get("due_at") and item["state"] in {"open", "in_progress", "waiting"}:
+            answer += " " + item["deadline_display"].rstrip(".") + "."
         if item.get("next_action") and item["state"] in {"open", "in_progress", "waiting"}:
             answer += f" Next step: {item['next_action'].rstrip('.')}."
         status = item.get("monitoring_status", "saved_only")
@@ -110,7 +124,8 @@ def confirmation(result):
             lines = ["Your saved commitments:"]
             for item in records:
                 line = (
-                    f"• {item['title']} — {item.get('deadline_display', 'Deadline not confirmed.')}"
+                    f"• {recorded_title(item)} — "
+                    f"{item.get('deadline_display', 'Deadline not confirmed.')}"
                 )
                 if item.get("next_action"):
                     line += f" Next: {item['next_action']}."
@@ -123,6 +138,18 @@ def confirmation(result):
         return "I've drafted that plan. Review it in Today before any contact is authorized."
     verb = "Saved" if result.get("status") == "saved" else "Updated"
     return f"{verb} your {result.get('kind', 'request')}."
+
+
+def recorded_title(item):
+    title = item["title"]
+    if item.get("title_recorded_at") and re.search(
+        r"\b(today|tomorrow|tonight|yesterday|next\s+\w+)\b", title, re.I
+    ):
+        day = datetime.fromisoformat(item["title_recorded_at"]).astimezone(
+            ZoneInfo(item.get("timezone", "UTC"))
+        ).strftime("%d %b %Y")
+        return f"“{title}” (wording recorded {day})"
+    return title
 
 
 def for_wording(value):

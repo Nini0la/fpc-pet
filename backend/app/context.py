@@ -83,6 +83,16 @@ def _fit_intention_metadata(record: dict[str, Any], fields: tuple[str, ...]) -> 
         return record
     record = {**record, "intention_details_omitted": True}
     record.pop("attention_context", None)
+    record.pop("title_is_scheduling_authority", None)
+    if not record.get("completion_report"):
+        record.pop("completion_report", None)
+    else:
+        record["completion_report"] = {
+            k: v for k, v in record["completion_report"].items()
+            if k in {"recorded_at", "source_at", "timing_text"}
+        }
+    if not re.search(r"\b(today|tomorrow|tonight|yesterday|next)\b", record.get("title", ""), re.I):
+        record.pop("title_recorded_at", None)
     if fits():
         return record
     record["intention_context"] = {
@@ -97,7 +107,7 @@ def _fit_intention_metadata(record: dict[str, Any], fields: tuple[str, ...]) -> 
             record["intention_context"].pop(field)
     if not fits():
         # The manifest retains the full selected provenance; one pointer suffices in this view.
-        record["sources"] = record["sources"][:1]
+        record["sources"] = record["sources"][:2]
     return record
 
 
@@ -248,7 +258,8 @@ def build_context(
                     profile.conversation_recall_after,
                 ),
             ),
-            ("recent_operations", recent_operations(db, user_id, profile.context_reset_at)),
+            ("recent_operations", recent_operations(
+                db, user_id, profile.conversation_recall_after)),
         ):
             for entry in entries:
                 payload[key].append(entry)
@@ -545,9 +556,13 @@ def build_context(
                 authority = describe_commitment(record, profile, db)
                 data.update(
                     intention_context=context_notes(record, db),
-                    **({"attention_context": attention_context(record, now)} if now else {}),
+                    **({"attention_context": attention_context(record, now)}
+                       if now and record.state in {"open", "in_progress", "waiting"} else {}),
                     due_local=authority["due_local"],
                     deadline_display=authority["deadline_display"],
+                    title_recorded_at=authority["title_recorded_at"],
+                    title_is_scheduling_authority=False,
+                    completion_report=authority["completion_report"],
                     due_granularity=record.due_granularity,
                     ambiguity=record.ambiguity,
                     monitoring_status=authority["monitoring_status"],

@@ -1,5 +1,61 @@
 # Implementation Status
 
+## Reliability and controlled owner release — November 5, 2026 (in progress)
+
+The owner authorized diagnosis, implementation, commits, a controlled Telegram trial and
+promotion after the trial passes. The isolated judge deployment is excluded from changes.
+
+Verified baseline: continuity/intention work committed as `971c1d4` on
+`feat/continuity-intentions`; **624 backend / 69 frontend** tests passed again, with Ruff,
+mypy (44 modules), TypeScript and ESLint. The suspended correction stash remains retained.
+The owner cloud runtime is still `25f8959`, schema `0014`, Nebius Super-VL, with healthy
+Telegram/scheduler heartbeats and its existing December 31 cutoff. The judge's read-only
+status reports `60bd905`, active, external messaging disabled.
+
+Read-only owner-scoped diagnosis (private artifacts in `.local/rollouts/owner-reliability/`):
+- Nine retained failed turns; the reported Nebius examples failed on the initial call with
+  `invalid_response`, a 1,200-token cap, low reasoning, and no tool execution. Historical
+  traces do not retain sufficient provider diagnostics to assert the exact finish reason.
+- The Samuel commitment contains relative timing only in its title, recorded October 23;
+  `due_at`, `deadline_hint` and `due_source_text` are null. It has no authorized monitoring.
+  Its title must not be rendered as a current structured deadline.
+- The product/submission completion was recorded on November 3. That unrelated change
+  advanced the legacy global context reset. The conservative `0015` backfill would therefore
+  suppress the earlier essay mention during rollout. No deletion tombstones, deleted memory
+  rows or cleared-by-deletion traces exist for this owner; upgrade handling needs a guarded
+  distinction between legacy corrections and actual forgetting.
+- Only one Telegram bot credential is configured. A canary can use an isolated database and
+  authenticated replay ingress with actual owner-DM delivery, without competing for the
+  production bot's update cursor. Replayed inputs must be labeled synthetic; genuine owner
+  Telegram conversations remain a separate acceptance observation.
+
+Implementation sequence: improve bounded provider diagnostics; reproduce the owner's cases;
+repair partial-effect/recovery and temporal/lifecycle gaps using existing messages, runs and
+proposals; rehearse migrations and rollback; commit a tested release; deploy the controlled
+canary; promote only after its gates pass; record deployed evidence and owner handoff.
+
+Candidate verification: **634 backend tests passed in 165.26s; 70 frontend tests passed**;
+Ruff, mypy (45 modules), TypeScript, ESLint and the Next.js production build passed.
+New coverage includes rollback of a failing tool while preserving an earlier successful tool,
+retained pending requests, source-linked retries without duplicate effects, three-intent handling,
+historical title timing across dates/timezones, retrospective/idempotent completion and date-only
+reminders refusing a guessed clock. Migration `0016` releases a legacy recall reset only with
+positive matching correction/completion evidence and no durable deletion indicators; unknown or
+forgotten histories keep the stricter boundary. Its upgrade/downgrade policy is regression-tested.
+
+Fresh provider probes retained in the private rollout directory show contextual low/minimal
+reasoning requests reaching the 15-second deadline, while disabling reasoning returned usable
+responses for the greeting, follow-up, compound and relationship examples. One date request still
+timed out. These observations do not retroactively establish the old `invalid_response` finish
+reason. The compound replay produced **three native tool calls**, demonstrating why the former
+two-call turn limit rejected otherwise interpretable work. The candidate permits four calls,
+retains two inference calls and the existing wall-clock bounds, and records allowlisted finish,
+token/reasoning counts, HTTP status and failure-stage metadata without reasoning text or secrets.
+
+The controlled canary uses a separate database and does not poll Telegram updates. Its replay
+ingress is explicitly synthetic; its Nebius calls, scheduler, outbox and labeled owner-DM delivery
+are real. The candidate no-reasoning profile is subject to these deployed gates before promotion.
+
 ## Owner-trial incomplete-response incident — November 2, 2026
 
 An owner-supplied Telegram screenshot showed an explicit November 7 reminder request and a later

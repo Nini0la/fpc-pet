@@ -33,11 +33,76 @@ ErrorCode = Literal[
 ]
 
 
+def safe_diagnostics(value: Any, secret: str = "") -> dict[str, Any]:
+    """Allowlisted provider metadata only: never bodies, reasoning text, URLs or headers."""
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    numbers = {
+        "input_tokens", "output_tokens", "reasoning_tokens", "content_chars",
+        "reasoning_chars", "tool_call_count", "http_status", "requested_max_tokens",
+    }
+    enums = {
+        "finish_reason": {"stop", "tool_calls", "length", "content_filter", "function_call"},
+        "failure_stage": {"deadline", "worker_exit", "transport", "json", "envelope",
+                          "provider_finish", "tool_calls", "content", "usage", "empty_content"},
+        "worker_stage": {"input", "configured", "transport", "response", "parsed"},
+    }
+    for key, item in value.items():
+        if key in numbers and type(item) is int and 0 <= item <= 1_000_000_000:
+            result[key] = item
+        elif key in enums and isinstance(item, str) and item in enums[key]:
+            result[key] = item
+        elif (key == "request_id" and isinstance(item, str)
+              and re.fullmatch(r"chatcmpl-[A-Za-z0-9_-]{1,96}", item)
+              and not (secret and secret in item)):
+            result[key] = item
+    return result
+
+
+def response_diagnostics(body, limit, secret):
+    if not isinstance(body, dict):
+        return {}
+    choices = body.get("choices")
+    choice = (choices[0] if isinstance(choices, list) and choices
+              and isinstance(choices[0], dict) else {})
+    message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    details = usage.get("completion_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    return safe_diagnostics({
+        "request_id": body.get("id"), "finish_reason": choice.get("finish_reason"),
+        "input_tokens": usage.get("prompt_tokens"), "output_tokens": usage.get("completion_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens"), "requested_max_tokens": limit,
+        "content_chars": len(message["content"])
+        if isinstance(message.get("content"), str) else None,
+        "reasoning_chars": len(message["reasoning_content"])
+        if isinstance(message.get("reasoning_content"), str) else None,
+        "tool_call_count": len(message["tool_calls"])
+        if isinstance(message.get("tool_calls"), list) else 0,
+    }, secret)
+
+
+def worker_stage(stage: str) -> None:
+    if __name__ == "__main__":
+        sys.stderr.write(f"gateway-stage:{stage}\n")
+        sys.stderr.flush()
+
+
+def last_worker_stage(stderr: bytes | None) -> dict[str, Any]:
+    lines = (stderr or b"").decode("ascii", errors="ignore").splitlines()
+    for line in reversed(lines):
+        if line.startswith("gateway-stage:"):
+            return safe_diagnostics({"worker_stage": line.removeprefix("gateway-stage:")})
+    return {}
+
+
 class GatewayError(Exception):
     """Only a safe code crosses the transport boundary, never provider diagnostics."""
 
-    def __init__(self, code: ErrorCode) -> None:
+    def __init__(self, code: ErrorCode, diagnostics: dict | None = None) -> None:
         self.code = code
+        self.diagnostics = safe_diagnostics(diagnostics)
         super().__init__(code)
 
 
@@ -50,6 +115,7 @@ class ModelReply:
     output_tokens: int | None
     latency_ms: int
     cost_usd: float | None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class Gateway(Protocol):
@@ -300,10 +366,13 @@ class OpenAICompatibleGateway:
                 check=False,
                 cwd=Path(__file__).resolve().parent.parent,
             )
+        except subprocess.TimeoutExpired as error:
+            raise GatewayError("unavailable", {"failure_stage": "deadline",
+                               **last_worker_stage(error.stderr)}) from None
         except Exception:
             raise GatewayError("unavailable") from None
         if result.returncode != 0 or time.monotonic() - started >= self.timeout_seconds:
-            raise GatewayError("unavailable")
+            raise GatewayError("unavailable", {"failure_stage": "worker_exit"})
         if len(result.stdout) > MAX_RESPONSE_BYTES:
             raise GatewayError("response_too_large")
         try:
@@ -314,11 +383,12 @@ class OpenAICompatibleGateway:
             )
             if not isinstance(body, dict):
                 raise ValueError
-            if set(body) == {"error"}:
+            if "error" in body and set(body) <= {"error", "diagnostics"}:
                 code = body["error"]
                 if not isinstance(code, str) or code not in get_args(ErrorCode):
                     raise ValueError
-                raise GatewayError(cast(ErrorCode, code))
+                raise GatewayError(cast(ErrorCode, code),
+                                   safe_diagnostics(body.get("diagnostics"), self.api_key))
             if set(body) != {"reply"} or not isinstance(body["reply"], dict):
                 raise ValueError
             reply = ModelReply(**body["reply"])
@@ -353,6 +423,7 @@ class OpenAICompatibleGateway:
             output_tokens=reply.output_tokens,
             latency_ms=max(0, int(elapsed * 1000)),
             cost_usd=reply.cost_usd,
+            diagnostics=safe_diagnostics(reply.diagnostics, self.api_key),
         )
 
     def request_payload(
@@ -427,6 +498,7 @@ class OpenAICompatibleGateway:
             raise GatewayError("invalid_request") from None
 
         started = time.monotonic()
+        worker_stage("transport")
         try:
             # Do not inherit proxy credentials/configuration or follow credential-bearing redirects.
             opener = build_opener(ProxyHandler({}), _NoRedirect())
@@ -434,17 +506,22 @@ class OpenAICompatibleGateway:
                 if response.status != 200:
                     raise GatewayError("unavailable")
                 raw = response.read(MAX_RESPONSE_BYTES + 1)
+                worker_stage("response")
                 if len(raw) > MAX_RESPONSE_BYTES:
                     raise GatewayError("response_too_large")
         except GatewayError:
             raise
         except HTTPError as error:
+            status = error.code
             error.close()
-            raise GatewayError("unavailable") from None
+            raise GatewayError("unavailable", {
+                "failure_stage": "transport", "http_status": status}) from None
         except Exception:
             # urllib, TLS and socket exceptions may contain URLs, bodies or credentials.
-            raise GatewayError("unavailable") from None
+            raise GatewayError("unavailable", {"failure_stage": "transport"}) from None
 
+        diagnostics: dict[str, Any] = {}
+        stage = "json"
         try:
             body = json.loads(
                 raw.decode("utf-8"),
@@ -453,6 +530,8 @@ class OpenAICompatibleGateway:
             )
             if not isinstance(body, dict):
                 raise ValueError
+            diagnostics = response_diagnostics(body, self.max_output_tokens, self.api_key)
+            stage = "envelope"
             choices = body.get("choices")
             if not isinstance(choices, list) or len(choices) != 1:
                 raise ValueError
@@ -469,18 +548,22 @@ class OpenAICompatibleGateway:
                 code: ErrorCode = (
                     "output_limit" if choice["finish_reason"] == "length" else "filtered_response"
                 )
-                raise GatewayError(code)
+                raise GatewayError(code, {**diagnostics, "failure_stage": "provider_finish"})
             model = _text(body.get("model"), 256, nonempty=True)
+            stage = "tool_calls"
             calls = message.get("tool_calls", [])
             if self.provider == "nebius" and calls is None:
                 calls = []  # Explicit null is documented for ordinary Nebius responses.
             tool_calls = _tool_calls(calls, enabled=bool(tools))
+            stage = "content"
             content = message.get("content")
             if content is None and tool_calls:
                 content = ""
             content = _text(content, MAX_CONTENT_CHARS)
             if self.provider == "nebius" and not content.strip() and not tool_calls:
+                stage = "empty_content"
                 raise ValueError  # Do not expose reasoning-only output as a successful answer.
+            stage = "usage"
             usage = body.get("usage")
             if usage is None:
                 usage = {}
@@ -510,9 +593,11 @@ class OpenAICompatibleGateway:
                 output_tokens=output_tokens,
                 latency_ms=max(0, int((time.monotonic() - started) * 1000)),
                 cost_usd=cost,
+                diagnostics=diagnostics,
             )
         except (ValueError, TypeError, OverflowError, RecursionError):
-            raise GatewayError("invalid_response") from None
+            raise GatewayError("invalid_response", {
+                **diagnostics, "failure_stage": stage}) from None
 
 
 def _worker() -> None:
@@ -527,7 +612,9 @@ def _worker() -> None:
             object_pairs_hook=_unique_object,
         )
         gateway = OpenAICompatibleGateway(**payload["config"])
+        worker_stage("configured")
         reply = gateway._complete(payload["messages"], payload["tools"])
+        worker_stage("parsed")
         output = json.dumps(
             {"reply": asdict(reply)}, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         ).encode("utf-8")
@@ -535,7 +622,8 @@ def _worker() -> None:
             raise GatewayError("response_too_large")
     except GatewayError as error:
         code = error.code if error.code in get_args(ErrorCode) else "unavailable"
-        output = json.dumps({"error": code}).encode("utf-8")
+        output = json.dumps({"error": code, **({"diagnostics": error.diagnostics}
+                                             if error.diagnostics else {})}).encode("utf-8")
     except Exception:
         output = b'{"error":"invalid_request"}'
     sys.stdout.buffer.write(output)

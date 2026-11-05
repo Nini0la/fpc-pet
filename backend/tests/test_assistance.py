@@ -516,7 +516,7 @@ def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
             assert db.scalar(select(func.count()).select_from(model)) == 0
 
 
-def test_three_tool_calls_reject_entire_batch_before_execution(client, gateway, monkeypatch):
+def test_five_tool_calls_reject_entire_batch_before_execution(client, gateway, monkeypatch):
     import app.assistance as assistance
 
     execute = Mock(wraps=assistance.execute_tool)
@@ -530,11 +530,11 @@ def test_three_tool_calls_reject_entire_batch_before_execution(client, gateway, 
                     {"title": f"Project {index}", "description": "A draft."},
                     call_id=f"call-{index}",
                 )
-                for index in range(3)
+                for index in range(5)
             ],
         )
     )
-    answer = send(client, "too-many", "Save three projects.", allow_memory_write=True)
+    answer = send(client, "too-many", "Save five projects.", allow_memory_write=True)
     assert answer["content"] == (
         "The requested tool-call limit was exceeded. No tool actions were executed."
     )

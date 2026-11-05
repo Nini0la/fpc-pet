@@ -103,6 +103,35 @@ def test_nebius_configuration_does_not_inherit_azure_credentials_or_prices():
     assert ENV["NEBIUS_API_KEY"] not in repr(gateway)
 
 
+def test_failed_provider_usage_survives_worker_boundary_without_reasoning_text(endpoint):
+    env, _, responses = endpoint
+    body = response(content="", finish="length")
+    body["id"] = "chatcmpl-nebius-test-secret"  # Must not copy an echoed credential.
+    body["usage"] = {"prompt_tokens": 13000, "completion_tokens": 1200,
+                     "completion_tokens_details": {"reasoning_tokens": 1190}}
+    responses.append((200, body))
+    gateway = OpenAICompatibleGateway.from_env(env | {"MODEL_MAX_OUTPUT_TOKENS": "1200"})
+    with pytest.raises(GatewayError) as failure:
+        gateway.complete([{"role": "user", "content": "Hey?"}], [])
+    assert failure.value.code == "output_limit"
+    details = failure.value.diagnostics
+    assert details["finish_reason"] == "length"
+    assert details["input_tokens"] == 13000 and details["output_tokens"] == 1200
+    assert details["reasoning_tokens"] == 1190 and details["requested_max_tokens"] == 1200
+    assert details["failure_stage"] == "provider_finish"
+    assert "request_id" not in details
+    assert "private model reasoning" not in json.dumps(details)
+
+
+def test_http_failure_exposes_status_but_never_provider_error_body(endpoint):
+    env, _, responses = endpoint
+    responses.append((429, {"error": "sensitive provider body nebius-test-secret"}))
+    with pytest.raises(GatewayError) as failure:
+        OpenAICompatibleGateway.from_env(env).complete([{"role": "user", "content": "Hi"}], [])
+    assert failure.value.diagnostics == {"failure_stage": "transport", "http_status": 429}
+    assert "sensitive" not in str(failure.value)
+
+
 def test_nested_tool_objects_are_inlined_without_mutating_shared_schemas():
     tools = tool_schemas(True)
     original = json.dumps(tools)

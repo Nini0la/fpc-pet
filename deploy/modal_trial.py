@@ -132,6 +132,7 @@ def inspect_runtime(probe_only: bool = False):
                 "model": reply.model,
                 "provider": os.environ.get("PROVIDER"),
                 "model_responded": bool(reply.content),
+                "diagnostics": reply.diagnostics,
                 "active": active(),
             }
         owner = db.scalar(select(User).where(User.username == "owner"))
@@ -146,6 +147,9 @@ def inspect_runtime(probe_only: bool = False):
             if os.environ.get("PROVIDER") == "nebius"
             else os.environ.get("AZURE_OPENAI_DEPLOYMENT"),
             "schema": db.scalar(text("SELECT version_num FROM alembic_version")),
+            "max_output_tokens": os.environ.get("MODEL_MAX_OUTPUT_TOKENS"),
+            "reasoning_effort": os.environ.get("NEBIUS_REASONING_EFFORT")
+            if os.environ.get("PROVIDER") == "nebius" else os.environ.get("MODEL_REASONING_EFFORT"),
             "owner_present": bool(owner),
             "telegram_linked": bool(linked and linked.linked),
             "telegram_heartbeat": str(bot.heartbeat_at) if bot else None,

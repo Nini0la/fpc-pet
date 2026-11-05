@@ -138,6 +138,10 @@ class ChangeCommitment(PlanFields):
     deadline_text: str | None = Field(default=None, min_length=1, max_length=500)
     clear_deadline: bool = False
     deadline: When | None = None
+    completion_time_text: str | None = Field(
+        default=None, min_length=1, max_length=200,
+        description="Verbatim reported completion timing, e.g. 'days ago'; never an inferred date.",
+    )
 
 
 class ListCommitments(BaseModel):
@@ -387,10 +391,29 @@ def describe(item: Commitment, user: User, db=None, now=None) -> dict[str, Any]:
         deadline = ("Before " if item.due_bound == "exclusive" else "Due ") + date_text
     else:
         deadline = "Deadline not confirmed." if item.deadline_hint else "No deadline set."
+        if re.search(r"\b(today|tomorrow|tonight|yesterday|next\s+\w+)\b", item.title, re.I):
+            deadline = "No structured deadline is saved; timing in the title is historical wording."
+    completion_report = None
+    if item.completed_at and item.state in {"complete", "completed"}:
+        completion_report = {"recorded_at": utc(item.completed_at).isoformat(),
+                             "actual_completion_time": "not established by the recorded timestamp"}
+        if db is not None:
+            entry = db.scalar(select(CommitmentRevision).where(
+                CommitmentRevision.user_id == item.user_id,
+                CommitmentRevision.commitment_id == item.id,
+                CommitmentRevision.snapshot["completed_at"].as_string()
+                == utc(item.completed_at).isoformat(),
+                CommitmentRevision.snapshot["completion_report"].as_string().is_not(None),
+            ).order_by(CommitmentRevision.version.desc()).limit(1))
+            if entry:
+                completion_report.update(entry.snapshot["completion_report"])
     return {
         "id": item.id,
         "version": item.version,
         "title": item.title,
+        "title_recorded_at": utc(item.created_at).isoformat(),
+        "title_is_scheduling_authority": False,
+        "completion_report": completion_report,
         "state": item.state,
         "purpose": item.purpose,
         "completion_criteria": item.completion_criteria,
@@ -638,6 +661,9 @@ def change(
         return reject(
             "delegated_workflow", "Use the responsibility review controls for this delegated task."
         )
+    if args.action == "complete" and item.state in {"complete", "completed"}:
+        return {"status": "read", "id": item.id, "kind": "commitment", "version": item.version,
+                "already_completed": True, "context": describe(item, user, db, now)}
     if (
         args.version is not None
         and args.version != item.version
@@ -655,6 +681,12 @@ def change(
                 "completion_not_confirmed", "Are you confirming that this commitment is complete?"
             )
     try:
+        if (args.completion_time_text is not None and args.action != "complete"):
+            return reject("invalid_completion_report",
+                          "Completion timing belongs to a completion report.")
+        if (args.completion_time_text is not None and not trusted
+                and normalized(args.completion_time_text) not in normalized(text)):
+            return reject("invalid_completion_report", "Use your actual completion timing words.")
         if (
             semantic
             and args.followup_enabled is True
@@ -781,6 +813,23 @@ def change(
     db.refresh(item)
     link_evidence(db, item, now)
     revision(db, item, "owner_control" if trusted else "message", source_id)
+    if args.action == "complete":
+        from .models import Message
+
+        report_source = db.get(Message, source_id)
+        entry = db.scalar(select(CommitmentRevision).where(
+            CommitmentRevision.user_id == user_id, CommitmentRevision.commitment_id == item.id,
+            CommitmentRevision.version == item.version,
+        ))
+        assert entry is not None
+        entry.snapshot = {**entry.snapshot, "completion_report": {
+            "source_message_id": source_id if not trusted else None,
+            "timing_text": args.completion_time_text,
+            "basis": "owner_report", "recorded_at": utc(now).isoformat(),
+            "source_at": utc(report_source.created_at).isoformat()
+            if report_source and report_source.user_id == user_id else utc(now).isoformat(),
+        }}
+        db.flush()
     db.add(
         ProvenanceLink(
             user_id=user_id,
@@ -798,5 +847,5 @@ def change(
         "version": item.version,
         "action": args.action,
         "delivery": "in_app" if item.next_relevant_moment else "none",
-        "context": describe(item, user),
+        "context": describe(item, user, db, now),
     }
