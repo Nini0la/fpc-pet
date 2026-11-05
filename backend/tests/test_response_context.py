@@ -65,12 +65,13 @@ def test_two_calls_capture_distinct_contexts_tools_and_server_formatting(client,
     assert trace["calls"][0]["request"] == traced.calls[0]
     assert trace["calls"][1]["request"] == traced.calls[1]
     assert project["id"] not in json.dumps(trace["calls"][0]["request"])
-    assert project["id"] in json.dumps(trace["calls"][1]["request"])
+    assert project["id"] not in json.dumps(trace["calls"][1]["request"])
+    assert project["title"] in json.dumps(trace["calls"][1]["request"])
     assert trace["calls"][0]["response"]["tool_calls"][0]["function"]["name"] == "save_project"
     assert trace["tool_executions"][0]["result"]["id"] == project["id"]
     assert trace["tool_executions"][0]["after_call_index"] == 1
     assert trace["calls"][1]["sections"][-1]["kind"] == "tool_results"
-    assert "Server receipts:" in data["response"]
+    assert "Server receipts:" not in data["response"]
     assert "Server receipts:" not in trace["calls"][1]["response"]["content"]
     assert len(traced.calls) == 2  # Inspecting an answer never calls the model again.
 

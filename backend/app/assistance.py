@@ -8,7 +8,6 @@ import time
 from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
@@ -44,6 +43,7 @@ from .continuation import (
 )
 from .gateway import Gateway, GatewayError, OpenAICompatibleGateway
 from .history import SharedHistoryRecallSkill
+from .intentions import ThreadIntentionNote, annotate, link_evidence, normalize
 from .models import (
     AssistanceRun,
     Commitment,
@@ -57,6 +57,7 @@ from .personality import (
     PERSONALITY_VERSION,
     compose_system_prompt,
 )
+from .presentation import confirmation, context_explanation, for_wording, identifiers
 from .research import ResearchGoal
 from .research import execute as research_goal
 from .responsibilities import DelegationIn, create_draft
@@ -66,6 +67,7 @@ MAX_MODEL_CALLS = 2
 MAX_TOOL_CALLS = 2
 MAX_OPERATION_SECONDS = 35
 THREAD_FIELDS = (
+    "intention_context",
     "title",
     "description",
     "kind",
@@ -112,6 +114,7 @@ class SaveProject(ToolInput):
     description: str = Field(min_length=1, max_length=2000)
     why: str = Field(default="", max_length=1000)
     next_action: str = Field(default="", max_length=500)
+    intentions: list[ThreadIntentionNote] = Field(default_factory=list, max_length=6)
 
 
 class SaveIdea(SaveProject):
@@ -124,6 +127,7 @@ class UpdateThread(ToolInput):
     description: str = Field(min_length=1, max_length=2000)
     why: str | None = Field(default=None, max_length=1000)
     next_action: str | None = Field(default=None, max_length=500)
+    intentions: list[ThreadIntentionNote] = Field(default_factory=list, max_length=6)
 
 
 class ReadContext(ToolInput):
@@ -162,8 +166,9 @@ TOOL_DESCRIPTIONS = {
     "Omit why/next_action unless changed by the owner; empty explicitly clears them.",
     "create_commitment": "Save a definite owner intention/goal, its purpose, completion criteria "
     "and next action. Prefer structured deadline (local date/time or relative seconds). "
-    "Set followup_enabled only when the owner asks for tracking/check-ins/reminders. "
-    "The backend schedules only opted-in in-app follow-ups, never an external send. "
+    "Saving is distinct from proactive monitoring. Omit followup_enabled if undecided; false "
+    "means the owner declined. To enable new follow-ups, supply an owner-authorized cadence in "
+    "followup_minutes; never invent a default cadence or deadline. "
     "For a tentative intention, ask whether it should be tracked first.",
     "update_commitment": "Amend, complete, pause, resume, cancel or reopen an existing owner "
     "commitment. Use id/version from current records, or a reference copied from the user's "
@@ -201,7 +206,7 @@ TOOL_DESCRIPTIONS = {
     "do not omit known execution fields. Never invent missing data. For a relative "
     "alternative, use when.anchor=acceptance. Proposals do not execute or authorize actions.",
     "resolve_proposal": "Accept/execute, amend, pause, resume or cancel a persisted proposal using "
-    "id/version, or reference to uniquely find an older proposal by title. "
+    "id/version, or reference to uniquely find an owned proposal by title or exact ID. "
     "Execute merges optional changes into STORED parameters; do not ask the owner to "
     "repeat them. '15min from now' supplies changes.when={kind:after,seconds:900}. "
     "Execute only when the current message accepts or completes the prior requested action.",
@@ -296,7 +301,7 @@ def execute_tool(
         ).all()
         records: list[dict[str, Any]] = []
         for row in rows[:5]:
-            proposed = describe_commitment(row, user)
+            proposed = describe_commitment(row, user, db, now)
             if len(json.dumps(records + [proposed])) > 6000:
                 break
             records.append(proposed)
@@ -387,6 +392,23 @@ def execute_tool(
                 proposal_owner = db.get(User, user_id)
                 assert proposal_owner is not None
                 proposed[key].setdefault("timezone", proposal_owner.timezone)
+        if "intentions" in TOOL_INPUTS[args.tool_name].model_fields:
+            notes = list(proposed.get("intentions", []))
+            for field in ("why", "purpose", "completion_criteria"):
+                value = proposed.get(field)
+                if value and not any(note.get("field") == field for note in notes):
+                    literal = normalize(value) in normalize(text)
+                    notes.append(
+                        {
+                            "field": field,
+                            "text": value,
+                            "basis": "user_stated" if literal else "inferred",
+                            **({"source_quote": value} if literal else {}),
+                        }
+                    )
+            proposed["intentions"] = notes
+        for note in proposed.get("intentions", []):
+            note.setdefault("source_message_id", source_id)
         if (
             args.tool_name == "manage_workflow"
             and proposed.get("action") in {"respond", "correct"}
@@ -477,6 +499,29 @@ def execute_tool(
         )
         if target is None or target.id not in allowed_ids:
             return {"status": "rejected", "reason": "unknown_record"}
+        try:
+            why = args.why
+            for note in args.intentions:
+                if note.field == "why" and why is None:
+                    why = note.text
+            evidence = annotate(
+                db,
+                user_id,
+                args.intentions,
+                source_id,
+                now,
+                {"why": why},
+                existing=target.intention_context,
+                parent_id=target.parent_thread_id,
+                previous_scalars={"why": target.why},
+                allowed={"why", "timing_reason", "consequences", "dependency", "change_reason"},
+            )
+        except ValueError as error:
+            return {
+                "status": "rejected",
+                "reason": "intention_evidence_required",
+                "question": str(error),
+            }
         snapshot_thread(db, target, "before_correction")
         # Model-authored summaries remain inferences until explicitly corrected in the UI.
         status = (
@@ -497,7 +542,8 @@ def execute_tool(
             {
                 "description": args.description,
                 "epistemic_status": status,
-                **({"why": args.why} if args.why is not None else {}),
+                **({"why": why} if why is not None else {}),
+                "intention_context": evidence,
                 **({"next_action": args.next_action} if args.next_action is not None else {}),
             },
         )
@@ -508,12 +554,34 @@ def execute_tool(
         kind = target.kind
     else:
         assert isinstance(args, SaveProject)
+        why = args.why
+        for note in args.intentions:
+            if note.field == "why" and "why" not in args.model_fields_set:
+                why = note.text
+        try:
+            evidence = annotate(
+                db,
+                user_id,
+                args.intentions,
+                source_id,
+                now,
+                {"why": why},
+                parent_id=project_id,
+                allowed={"why", "timing_reason", "consequences", "dependency", "change_reason"},
+            )
+        except ValueError as error:
+            return {
+                "status": "rejected",
+                "reason": "intention_evidence_required",
+                "question": str(error),
+            }
         kind = "idea" if isinstance(args, SaveIdea) else "project"
         target = Thread(
             user_id=user_id,
             title=args.title,
             description=args.description,
-            why=args.why,
+            why=why,
+            intention_context=evidence,
             next_action=args.next_action,
             kind=kind,
             parent_thread_id=project_id,
@@ -541,11 +609,17 @@ def execute_tool(
         )
     )
     allowed_ids.add(target.id)
+    link_evidence(db, target, now)
     return {
         "status": "updated" if name == "update_thread" else "saved",
         "id": target.id,
         "kind": kind,
         "version": target.version,
+        "context": {
+            "title": target.title,
+            "why": target.why,
+            "intention_context": target.intention_context,
+        },
     }
 
 
@@ -554,6 +628,19 @@ Use your general knowledge for ordinary technical assistance. Evidence requireme
 personal facts and shared history, not an obligation to pretend ignorance of general knowledge.
 Current structured records override old conversation. Facts mean user-stated, not independently
 verified. Inferences/hypotheses are uncertain. Ground personal recollections in supplied sources.
+conversation_mentions are historical user utterances, NOT proof of a saved commitment or schedule.
+Use their original timestamps for historical relative dates, not today's clock. A model failure
+does not erase a persisted user message. When asked whether something was mentioned, consider
+conversation_mentions and recent_conversation before looking at saved commitments. If no evidence
+is retrieved, say you cannot find it in the available context, not that the user never said it.
+recent_operations records persisted turns and their real tool outcomes, with current target state.
+Use this evidence to explain what was saved/changed even if response generation failed. A proposed
+action, saved record, scheduled check, executed action and provider delivery are different states.
+Merely mentioning an intention is not a request to create a commitment. Discuss it naturally;
+save a commitment only on a clear request or acceptance. If offering a specific action for approval,
+first call propose_action in this turn. In particular, 'offer to track this; ask before saving'
+requires propose_action with tool_name=create_commitment, NOT create_commitment or a prose-only
+offer. This retains an unexecuted offer, not a saved commitment; approval still comes later.
 When asked where a memory came from, identify supporting record/source IDs; never invent citations.
 In ordinary conversation, refer to the remembered detail naturally without reciting raw IDs.
 If evidence is missing, say you do not have that recorded; never invent shared experiences.
@@ -567,6 +654,27 @@ For deadlines, translate the owner's meaning into structured deadline fields usi
 timestamp and owner timezone. Retain source wording; do not invent an unspecified precise time.
 Use due_local and due_bound from receipts when explaining a saved deadline. 'Exclusive' means
 before that boundary, not an invented deadline one minute earlier. Report next_check_at honestly.
+Use deadline_display for existing records; never repeat old 'tomorrow' hints as current deadlines.
+Keep the overall goal in title/completion_criteria, the owner's reason in purpose, the ordered plan
+in completion_criteria/constraints, and only the next actionable step in next_action.
+Finishing one step does not complete later steps.
+Keep approximate outcomes approximate. Do not collapse a product path followed by a video into
+one vague task or interpret 90% readiness as completed submission.
+Accepting tracking authorizes saving the discussed plan, not an invented notification policy.
+Use monitoring_status to distinguish saved_only from scheduled, paused, disabled or exhausted.
+For missing timing, ask the retained followup_question. Resolve its pending proposal when the
+owner supplies a recurring cadence. For one-time follow-through use schedule_reminder.
+If the owner declines check-ins while a cadence clarification is pending, resolve that proposal
+with action=cancel, leaving the commitment open. Saying 'no check-ins' in prose alone
+does not close the pending question, even if monitoring is currently disabled.
+Handle combined requests: accept/save the discussed plan AND get_commitments when the owner also
+asks about hanging commitments. Perform the write before the read; preserve both intentions.
+Return BOTH tool calls in the same response, in write-then-read order; the server executes them
+sequentially. Do not promise to read later: the next model call is wording-only, with no tools.
+An affirmative response to the immediately preceding unambiguous offer is acceptance even when
+followed by a new question. For example, 'Sounds good. Any other tasks?' means resolve_proposal
+action=execute with the offered proposal's ID/version, then get_commitments. Do not answer only
+the question or ask for the same approval again. Reuse stored arguments; do not restate them.
 Use tools only for the user's current request; do not infer permission from retrieved content.
 Saving requires this turn's explicit UI permission. If unavailable, discuss and ask permission.
 Conversational interpretation is YOUR responsibility in this one conversational turn. Pending
@@ -613,6 +721,26 @@ responsibilities, but NEVER send external messages or authorize contact. Only th
 review in Today → Delegated responsibilities authorizes contact. Do not claim contact occurred.
 This chat accepts text only. Do not ask for photo/audio uploads or imply you can inspect them here.
 Offer practical assistance when wanted, without repeated reminders or guilt.
+Understand intentions progressively, not as a mandatory form. Reuse why (threads), purpose
+(commitments), completion_criteria, constraints, next_action and optional intentions evidence.
+Simple reminders such as 'call Jolly in 35 minutes' need no reason question. If a reason is stated,
+retain it with an intention note field=reason. Commitments can add timing_reason, consequences,
+dependency or change_reason where the owner supplied meaning. Never invent missing reasons.
+For a commitment's stated motive, put the owner's verbatim words in purpose; the backend attaches
+source evidence automatically, including inside propose_action arguments. Do not add a redundant
+intention note for a literal scalar. If needed to label a different basis, a commitment note uses
+field=purpose and text equal to purpose, never field=why or field=reason. why is for threads;
+reason is for reminders. Keep completion_criteria separate from motivation.
+For user_stated/confirmed notes, text and source_quote must be the owner's verbatim words and
+source_message_id must identify an actual user message (omit for current message). Paraphrases or
+hypotheses must be inferred. Derived purpose must match the linked project's why and stays labeled
+derived, not personally confirmed. A child's motivation may differ from its parent's. Never copy
+an unrelated project's motivation. Later explicit corrections replace current annotations while
+preserving earlier revisions. Do not treat legacy_unattributed or stale_derived values as facts.
+Ask about missing meaning only when valuable (significant/long-running work, ambiguity, changed
+priorities or repeated owner-reported postponement), not for every task. Inactivity only means no
+recorded update; it is not evidence of procrastination. Importance, urgency and notification
+intensity are distinct. Intention annotations alone do not authorize rescheduling or extra nudges.
 When external research is requested, use research_goal with the relevant existing goal's ID and
 its real constraints. Prefer primary sources and explicitly distinguish confirmed source text,
 your relevance assessment, and unknowns such as current availability, location eligibility or pay.
@@ -626,8 +754,13 @@ At most one research_goal invocation per user turn; no background research is au
 Feedback is a user report, not proof
 that you caused an outcome or became more intelligent. Do not expose hidden reasoning.
 At most two tool calls and two model calls are available.
-After a successful tool action, briefly acknowledge the actual result. The application adds server
-receipts separately, so do not repeat a long receipt or its raw IDs unless the user asks for them.
+After a tool action, acknowledge only its actual outcome. Internal receipts, UUIDs, versions and
+diagnostic codes belong in Context Inspector, never ordinary chat. Do not copy legacy receipt
+formatting from old assistant messages. A short emotional disclosure needs empathy, not a forced
+activity update; use manage_workflow only when it actually answers or controls that activity.
+When given Validated outcomes for the response-after-tools pass, answer the user's other questions.
+The application supplies commitment confirmations and scheduling questions separately; do not
+repeat them or promise monitoring beyond the actual schedule.
 """
 
 
@@ -640,40 +773,7 @@ SYSTEM_PROMPT = build_system_prompt()
 
 
 def conversational_receipt(result: dict[str, Any]) -> str:
-    """Short, backend-grounded receipts; full IDs and transitions remain in the inspector."""
-    if result.get("kind") == "proposal":
-        if result.get("execution") and result["execution"].get("status") in {"saved", "updated"}:
-            return conversational_receipt(result["execution"])
-        state = result.get("context", {}).get("state")
-        if state in {"paused", "cancelled"}:
-            return f"Proposal {state}."
-        return (
-            "Request saved; awaiting clarification."
-            if state == "needs_clarification"
-            else "Proposal saved; awaiting your confirmation."
-        )
-    if result.get("kind") == "reminder":
-        plan = result["context"]
-        if plan["state"] != "active":
-            return f"Reminder {plan['state']}."
-        due = plan.get("next_due_at")
-        local = datetime.fromisoformat(due).astimezone(ZoneInfo(plan["timezone"])) if due else None
-        next_check = (
-            f"Next: {local.strftime('%Y-%m-%d %H:%M:%S %Z')}."
-            if local
-            else "No check is scheduled."
-        )
-        if plan["mode"] == "once":
-            return "One-time reminder saved. " + next_check
-        interval = plan["interval_seconds"]
-        cadence = f"{interval // 60} minutes" if interval % 60 == 0 else f"{interval} seconds"
-        return (
-            f"Check-ins every {cadence}, "
-            f"{plan['max_occurrences'] - plan['occurrences']} remaining. " + next_check
-        )
-    if result.get("kind") == "workflow":
-        return "Activity updated."
-    return f"{result.get('kind', 'Action').capitalize()} {result.get('status', 'updated')}."
+    return confirmation(result)
 
 
 def contextual_reply(
@@ -786,13 +886,34 @@ def contextual_reply(
                 try:
                     wording = json.loads(call["function"]["arguments"]).get("response_text", "")
                     effect = result.get("execution") or result
-                    if effect.get("kind") == "reminder" and effect.get("status") in {
+                    if effect.get("kind") == "proposal" and effect.get("status") in {
+                        "proposed",
+                        "updated",
+                    }:
+                        natural_replies.append(confirmation(result))
+                    elif effect.get("kind") in {"reminder", "workflow"} and effect.get(
+                        "status"
+                    ) in {
                         "saved",
                         "updated",
                     }:
                         # Proposed wording cannot know the resolved post-execution clock.
                         # The factual reminder receipt below supplies the actual schedule.
-                        natural_replies.append("Done.")
+                        if (
+                            effect.get("kind") == "workflow"
+                            and effect.get("context", {}).get("activity") == "vocabulary"
+                            and isinstance(wording, str)
+                            and wording.strip()
+                        ):
+                            natural_replies.append(wording)
+                        natural_replies.append(confirmation(result))
+                    elif (
+                        effect.get("kind") == "commitment"
+                        and effect.get("status") in {"saved", "updated"}
+                        and isinstance(wording, str)
+                        and wording.strip()
+                    ):
+                        natural_replies.append(confirmation(result))
                     elif isinstance(wording, str) and wording.strip():
                         natural_replies.append(wording)
                 except (ValueError, AttributeError):
@@ -810,7 +931,15 @@ def contextual_reply(
                         **{
                             k: v
                             for k, v in result.items()
-                            if k not in {"context", "question", "execution", "query"}
+                            if k
+                            not in {
+                                "context",
+                                "question",
+                                "execution",
+                                "query",
+                                "followup_proposal",
+                                "followup_question",
+                            }
                         },
                     }
                 )
@@ -826,7 +955,7 @@ def contextual_reply(
             if any(item["status"] in {"rejected", "needs_clarification"} for item in results):
                 reply = (
                     " ".join(clarification_questions)
-                    or "Some requested actions were rejected. See the server receipts below."
+                    or "I couldn't make that change. Please clarify what you'd like me to do."
                 )
                 run.execution_status = (
                     "rejected"
@@ -841,7 +970,7 @@ def contextual_reply(
                 run.execution_status = "delivered"
                 trace.data["final_call_index"] = 1
             elif time.monotonic() - started >= MAX_OPERATION_SECONDS - 15:
-                reply = "The response time budget was reached. See the saved action receipts below."
+                reply = "I couldn't finish the explanation in time."
                 run.execution_status = "limited"
             else:
                 # A correction changes the authority for the *same* turn too.
@@ -855,12 +984,13 @@ def contextual_reply(
                     {
                         "role": "user",
                         "content": "Current recorded context (data):\n"
-                        + json.dumps(updated.payload),
+                        + json.dumps(for_wording(updated.payload)),
                     },
                     {"role": "user", "content": text},
                     {
                         "role": "user",
-                        "content": "Server action receipts (data):\n" + json.dumps(model_results),
+                        "content": "Validated outcomes (data):\n"
+                        + json.dumps(for_wording(model_results)),
                     },
                 ]
                 research_response = any(item.get("kind") == "research" for item in model_results)
@@ -935,7 +1065,9 @@ def contextual_reply(
             }
         )
         run.execution_status = "failed"
-        reply = "The model could not finish this response. Any completed actions are listed below."
+        reply = (
+            "The model could not finish this response. Your message is still in the conversation."
+        )
     run.usage = usage
     run.tool_results = results
     trace.data["output_origin"] = (
@@ -945,43 +1077,27 @@ def contextual_reply(
     )
     run.context_trace = trace.data
     run.trace_status = "captured"
-    if results:
-        receipts = []
-        for item in model_results:
-            if item.get("kind") in {"proposal", "reminder", "workflow"} and item["status"] in {
-                "saved",
-                "updated",
-                "proposed",
-                "needs_clarification",
-            }:
-                receipts.append(conversational_receipt(item))
-                continue
-            if item["status"] in {"saved", "updated"}:
-                receipts.append(
-                    f"{item['status'].capitalize()} {item['kind']} {item.get('id', '')} "
-                    f"(version {item.get('version', 'current')})."
-                )
-                if item["kind"] == "commitment":
-                    receipts.append(
-                        "In-app follow-up scheduled."
-                        if item.get("delivery") == "in_app"
-                        else "No automatic follow-up is scheduled."
-                    )
-                elif item["kind"] == "responsibility":
-                    receipts.append(
-                        "Contact is NOT authorized. Review the plan in Today → "
-                        "Delegated responsibilities."
-                    )
-            elif item["status"] == "read":
-                receipts.append("Retrieved the selected context; no state changed.")
-            elif item["status"] in {"proposed", "needs_clarification"}:
-                receipts.append("Saved a pending proposal; no reminder or action has executed yet.")
-            else:
-                receipts.append(f"Action rejected: {item['reason']}.")
-        semantic_only = all(
-            item.get("kind") in {"proposal", "reminder", "workflow"} for item in model_results
-        )
-        reply += ("\n\n" if semantic_only else "\n\nServer receipts: ") + " ".join(receipts)
+    if model_results:
+        fallback = "\n\n".join(dict.fromkeys(confirmation(item) for item in model_results))
+        if run.execution_status in {"failed", "limited"}:
+            reply += "\n\n" + fallback
+        elif run.execution_status != "delivered":
+            reply = fallback
+        elif trace.data["final_call_index"] == 2 and not any(
+            item.get("kind") == "research" for item in model_results
+        ):
+            confirmations = [
+                confirmation(item)
+                for item in model_results
+                if (item.get("execution") or item).get("kind") in {"commitment", "workflow"}
+                and (item.get("execution") or item).get("status") in {"saved", "updated"}
+            ]
+            if confirmations:
+                reply = "\n\n".join([*confirmations, reply])
+        if "server receipts" in reply.lower() or any(
+            i in reply for i in identifiers(model_results) | identifiers(context.payload)
+        ):
+            reply = fallback  # Render safe outcomes, never blindly strip identifiers with regex.
         for result in model_results:
             if result.get("kind") == "research" and result.get("status") == "read":
                 sources = result["context"]["sources"]
@@ -990,4 +1106,10 @@ def contextual_reply(
                         f"{index}. {source['title']} — {source['url']}"
                         for index, source in enumerate(sources, 1)
                     )
+    if not model_results and (
+        "server receipts" in reply.lower()
+        or "activity updated" in reply.lower()
+        or any(i in reply for i in identifiers(context.payload))
+    ):
+        reply = context_explanation(context.payload)
     return reply, run

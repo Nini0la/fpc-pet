@@ -14,6 +14,7 @@ from app.agent import AgentRuntime
 from app.clock import FakeClock
 from app.commitments import utc
 from app.models import (
+    AssistanceRun,
     Commitment,
     ConversationProposal,
     JournalEntry,
@@ -279,7 +280,9 @@ def test_acceptance_still_needs_current_write_permission_and_ownership(pg_client
         {"id": identifier, "version": 1, "action": "execute"},
         allowed=False,
     )
-    assert "write_permission_required" in answer["content"]
+    assert (
+        "permission" in answer["content"] and "write_permission_required" not in answer["content"]
+    )
     with main.SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(ReminderPlan)) == 0
         assert db.get(ConversationProposal, identifier).state == "proposed"
@@ -445,7 +448,7 @@ def test_proposal_pause_resume_partial_correction_and_cancel(pg_client, scene):
         "resolve_proposal",
         {"id": identifier, "version": 5, "action": "execute"},
     )
-    assert "closed_proposal" in answer["content"]
+    assert "already closed" in answer["content"] and "closed_proposal" not in answer["content"]
     with main.SessionLocal() as db:
         assert db.scalar(select(func.count()).select_from(ReminderPlan)) == 0
 
@@ -507,7 +510,8 @@ def test_model_can_pause_resume_and_semantically_grade_vocabulary(pg_client, sce
         assert attempt.user_answer == "It means only starting to take shape"
 
 
-def test_stale_and_foreign_proposals_cannot_execute(pg_client, scene):
+@pytest.mark.parametrize("identifier_field", ["id", "reference"])
+def test_stale_and_foreign_proposals_cannot_execute(pg_client, scene, identifier_field):
     main, gateway = scene
     act(
         pg_client,
@@ -529,9 +533,9 @@ def test_stale_and_foreign_proposals_cannot_execute(pg_client, scene):
         "stale",
         "OK",
         "resolve_proposal",
-        {"id": identifier, "version": 99, "action": "execute"},
+        {identifier_field: identifier, "version": 99, "action": "execute"},
     )
-    assert "version_conflict" in answer["content"]
+    assert "changed since" in answer["content"] and "version_conflict" not in answer["content"]
     assert (
         pg_client.post(
             "/api/auth/login",
@@ -546,10 +550,13 @@ def test_stale_and_foreign_proposals_cannot_execute(pg_client, scene):
         "foreign",
         "OK",
         "resolve_proposal",
-        {"id": identifier, "version": 1, "action": "execute"},
+        {identifier_field: identifier, "version": 1, "action": "execute"},
     )
-    assert "unknown_proposal" in answer["content"]
+    assert "Which proposed action" in answer["content"]
+    assert "unknown_proposal" not in answer["content"]
     with main.SessionLocal() as db:
+        run = db.scalar(select(AssistanceRun).where(AssistanceRun.message_id == answer["id"]))
+        assert run.tool_results[0]["reason"] == "unknown_proposal"
         assert db.scalar(select(func.count()).select_from(ReminderPlan)) == 0
 
 

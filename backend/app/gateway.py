@@ -28,7 +28,8 @@ MAX_TOOL_CALLS = 16
 NEBIUS_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 
 ErrorCode = Literal[
-    "invalid_config", "invalid_request", "unavailable", "invalid_response", "response_too_large"
+    "invalid_config", "invalid_request", "unavailable", "invalid_response", "response_too_large",
+    "output_limit", "filtered_response",
 ]
 
 
@@ -150,7 +151,7 @@ def _inline_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
 class OpenAICompatibleGateway:
     """Use a versioned base URL, e.g. https://example.com/v1.
 
-    MODEL_MAX_OUTPUT_TOKENS defaults to 600 (maximum 1200; Nebius maximum 2400).
+    MODEL_MAX_OUTPUT_TOKENS defaults to 600 (maximum 1200; Nebius maximum 4096).
     MODEL_TIMEOUT_SECONDS defaults to 15 (maximum 15).
     Each complete call uses a killable worker to enforce a wall-clock deadline.
     PROVIDER supports openai_compatible, azure_openai and nebius. Prices are USD per million.
@@ -205,7 +206,7 @@ class OpenAICompatibleGateway:
                 or len(self.model) > 256
                 or any(ord(char) < 32 or ord(char) == 127 for char in self.model)
                 or type(self.max_output_tokens) is not int
-                or not 1 <= self.max_output_tokens <= (2400 if self.provider == "nebius" else 1200)
+                or not 1 <= self.max_output_tokens <= (4096 if self.provider == "nebius" else 1200)
                 or isinstance(self.timeout_seconds, bool)
                 or not 0 < self.timeout_seconds <= 15
             ):
@@ -465,7 +466,10 @@ class OpenAICompatibleGateway:
                 "length", "content_filter"
             }:
                 # A syntactically valid but truncated tool request must not mutate state.
-                raise ValueError
+                code: ErrorCode = (
+                    "output_limit" if choice["finish_reason"] == "length" else "filtered_response"
+                )
+                raise GatewayError(code)
             model = _text(body.get("model"), 256, nonempty=True)
             calls = message.get("tool_calls", [])
             if self.provider == "nebius" and calls is None:

@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from .commitments import available, quiet, utc
 from .continuation import policy
+from .intentions import reason_phrase
 from .models import ProvenanceLink, ReminderPlan, ScheduledAction
 from .persistence import append_message, get_or_create_conversation
 
@@ -99,6 +100,9 @@ def perform_plan(db, user, action, event_id, now, finish):
         if plan.mode == "once"
         else f"A check-in you requested: {plan.topic}. How is it going?"
     )
+    reason = reason_phrase(plan, user.timezone)
+    if reason:
+        content += " " + reason
     message = append_message(
         db,
         user_id=user.id,

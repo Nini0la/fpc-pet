@@ -159,7 +159,8 @@ def test_nebius_real_http_transport_nullable_tools_usage_and_private_reasoning(e
 def test_truncated_even_valid_tool_output_is_rejected(endpoint, finish):
     env, _, responses = endpoint
     responses.append((200, response("", [tool("schedule_reminder", {"topic": "test"})], finish)))
-    with pytest.raises(GatewayError, match="invalid_response"):
+    error = "output_limit" if finish == "length" else "filtered_response"
+    with pytest.raises(GatewayError, match=error):
         OpenAICompatibleGateway.from_env(env).complete(
             [{"role": "user", "content": "test"}], [{"type": "function"}]
         )
@@ -278,7 +279,7 @@ def test_missing_preflight_key_never_calls_provider(monkeypatch):
 
 
 def test_nebius_larger_reasoning_budget_remains_bounded():
-    gateway = OpenAICompatibleGateway.from_env(ENV | {"MODEL_MAX_OUTPUT_TOKENS": "2400"})
-    assert gateway.request_payload([{"role": "user", "content": "test"}], [])["max_tokens"] == 2400
+    gateway = OpenAICompatibleGateway.from_env(ENV | {"MODEL_MAX_OUTPUT_TOKENS": "4096"})
+    assert gateway.request_payload([{"role": "user", "content": "test"}], [])["max_tokens"] == 4096
     with pytest.raises(GatewayError, match="invalid_config"):
-        OpenAICompatibleGateway.from_env(ENV | {"MODEL_MAX_OUTPUT_TOKENS": "2401"})
+        OpenAICompatibleGateway.from_env(ENV | {"MODEL_MAX_OUTPUT_TOKENS": "4097"})

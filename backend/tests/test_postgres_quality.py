@@ -362,7 +362,7 @@ def test_concurrent_morning_triggers_create_one_logical_briefing(pg_sessions):
         assert db.scalar(select(func.count()).select_from(VocabularyItem)) == 1
         proactive = db.scalars(select(Message).where(Message.role == "assistant")).all()
         assert len(proactive) == 1
-        assert "Power List" in proactive[0].content
+        assert "move forward today" in proactive[0].content
 
 
 def test_forced_concurrent_due_mornings_increment_vocabulary_exposure_once(pg_sessions):

@@ -134,7 +134,7 @@ def test_morning_event_persists_one_structured_briefing_in_the_same_chat():
         assert len(messages) == 1
         assert messages[0].conversation_id == conversation_id
         assert messages[0].role == "assistant"
-        assert "Power List" in messages[0].content
+        assert "move forward today" in messages[0].content
         assert db.scalar(select(func.count()).select_from(AgentEvent)) == 2
         assert db.scalar(select(func.count()).select_from(SkillRun)) == 2
         assert db.scalar(select(func.count()).select_from(Episode)) == 1

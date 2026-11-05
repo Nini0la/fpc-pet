@@ -52,10 +52,14 @@ NEBIUS_BASE_URL=https://api.tokenfactory.nebius.com/v1
 `PROVIDER=nebius` and `MODEL_MODE=live` select it for a backend process. `NEBIUS_API_KEY` and
 `NEBIUS_MODEL` are required. Selecting Nebius never falls back to Azure/generic credentials,
 model names, reasoning settings or prices. Missing prices are reported as unknown, not zero.
-The Nebius output ceiling is **2,400 tokens** (the owner trial retains its 1,200-token setting)
-with **15 seconds per inference call**;
-configure `MODEL_MAX_OUTPUT_TOKENS` and `MODEL_TIMEOUT_SECONDS` within those bounds. Do not
+The development gateway's Nebius output ceiling is **4,096 tokens**, with **15 seconds per
+inference call**; the owner trial uses 1,200 and the isolated judge deployment uses 2,400.
+Configure `MODEL_MAX_OUTPUT_TOKENS` and `MODEL_TIMEOUT_SECONDS` within those bounds. Do not
 raise these limits merely to hide failed reasoning/tool compatibility: measure first.
+The November 1 continuity journey used an explicit 4,096-token/low-reasoning setting after
+measured `output_limit` failures at 2,400 and missed actions with reasoning disabled. See
+[`CONTINUITY_INTENTIONS.md`](CONTINUITY_INTENTIONS.md) for the retained failed attempts, passing
+run, usage and remaining quality limits. The default output allowance remains 600.
 
 Requests use bearer authentication, `max_tokens`, native function tools and `service_tier=default`
 (no automatic over-limit tier), with `store=false`. They do not retry or silently change provider.

@@ -55,6 +55,9 @@ class User(Base):
     context_reset_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    conversation_recall_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     checkins_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     morning_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     evening_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -109,6 +112,7 @@ class Thread(Owned, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     kind: Mapped[str] = mapped_column(String(20), default="thread")
     why: Mapped[str] = mapped_column(Text, default="")
+    intention_context: Mapped[dict] = mapped_column(JSON, default=dict)
     # A fact is user-stated, not externally verified, including legacy explicit records.
     epistemic_status: Mapped[str] = mapped_column(String(20), default="fact")
     parent_thread_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
@@ -189,6 +193,7 @@ class Commitment(Owned, Base):
     priority: Mapped[int] = mapped_column(Integer, default=0)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     purpose: Mapped[str] = mapped_column(Text, default="")
+    intention_context: Mapped[dict] = mapped_column(JSON, default=dict)
     completion_criteria: Mapped[str] = mapped_column(Text, default="")
     next_action: Mapped[str] = mapped_column(Text, default="")
     constraints: Mapped[list] = mapped_column(JSON, default=list)
@@ -828,6 +833,7 @@ class ConversationProposal(Owned, Base):
 class ReminderPlan(Owned, Base):
     __tablename__ = "reminder_plans"
     topic: Mapped[str] = mapped_column(String(500))
+    intention_context: Mapped[dict] = mapped_column(JSON, default=dict)
     mode: Mapped[str] = mapped_column(String(20))
     state: Mapped[str] = mapped_column(String(20), default="active")
     version: Mapped[int] = mapped_column(Integer, default=1)

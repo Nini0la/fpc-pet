@@ -122,7 +122,7 @@ def autonomy_router(db_dependency, user_dependency, mutation_guard, runtime) -> 
         ).all()
         return {
             "preferences": preference_dict(user, runtime.clock.now()),
-            "commitments": [describe(row, user) for row in rows[:limit]],
+            "commitments": [describe(row, user, db) for row in rows[:limit]],
             "has_more": len(rows) > limit,
             "limit": limit,
         }
@@ -209,7 +209,7 @@ def autonomy_router(db_dependency, user_dependency, mutation_guard, runtime) -> 
         if prior:
             if prior.request_fingerprint != fingerprint or prior.status == "rejected":
                 raise HTTPException(409, "Action ID already used; refresh and make a new request")
-            return describe(item, user)
+            return describe(item, user, db)
         recorded = AgentEvent(
             user_id=user.id,
             external_id=external,
@@ -248,7 +248,7 @@ def autonomy_router(db_dependency, user_dependency, mutation_guard, runtime) -> 
                 result.get("question", result["reason"]),
             )
         db.refresh(item)
-        return describe(item, user)
+        return describe(item, user, db)
 
     @router.get("/api/commitments/{identifier}/revisions")
     def revisions(

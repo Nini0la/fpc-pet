@@ -277,32 +277,42 @@ class MorningBriefingSkill:
             if vocabulary["mode"] == "new":
                 lines.append(
                     f"Word of the Day: {vocabulary['word']} — {vocabulary['definition']} "
-                    f"Example: {vocabulary['example']} ({vocabulary['reason']})"
+                    f"Example: {vocabulary['example']}"
                 )
             elif vocabulary["mode"] == "review":
-                lines.append(
-                    f"Due vocabulary review: {vocabulary['word']} ({vocabulary['reason']})."
-                )
-        if commitments:
-            lines.append("Open commitments: " + "; ".join(item.title for item in commitments[:5]))
-        if unfinished_ids:
-            lines.append(
-                "Unfinished yesterday: "
-                + "; ".join(
-                    item.title
-                    for item in commitments[:BRIEFING_SECTION_LIMIT]
-                    if item.id in unfinished_ids
-                )
-            )
-        if threads:
-            lines.append("Active threads: " + "; ".join(item.title for item in threads[:5]))
-        if recent:
-            lines.append("Recent: " + "; ".join(item.summary for item in recent[-3:]))
+                lines.append(f"A word to revisit: {vocabulary['word']}.")
+        from .commitments import describe
+        from .intentions import reason_phrase
+
         if power_list:
-            lines.append("Power List:")
-            lines.extend(
-                f"{index}. {item['title']} — {item['reason']}"
-                for index, item in enumerate(power_list, 1)
+            lines.append("A few things you might want to move forward today:")
+            records: dict[str, Any] = {item.id: item for item in commitments}
+            records.update({item.id: item for item in threads})
+            seen = set()
+            for selected in power_list:
+                item = records[selected["id"]]
+                if item.title.casefold() in seen:
+                    continue
+                seen.add(item.title.casefold())
+                line = f"• {item.title}."
+                if isinstance(item, Commitment) and (item.due_at or item.ambiguity != "none"):
+                    line += " " + describe(item, user)["deadline_display"]
+                if item.next_action:
+                    line += f" Next: {item.next_action}."
+                reason = reason_phrase(item, user.timezone)
+                if reason:
+                    line += " " + reason
+                lines.append(line)
+            lines.append("What would be a useful first step? You can change the plan.")
+        else:
+            lines.append(
+                "No open priorities are recorded. What would you like to make room for today?"
+            )
+        if yesterday and not yesterday.deleted:
+            reported = yesterday.corrected_content or yesterday.original_content
+            lines.append(
+                f"In your last reflection, you said: “{reported[:180]}"
+                f"{'…' if len(reported) > 180 else ''}”"
             )
         content = "\n".join(lines)
 

@@ -1,5 +1,104 @@
 # Implementation Status
 
+## Owner-trial incomplete-response incident — November 2, 2026
+
+An owner-supplied Telegram screenshot showed an explicit November 7 reminder request and a later
+ordinary greeting both receiving the generic incomplete-response fallback. A read-only,
+owner-scoped inspection of the authoritative schema-`0014` database confirmed the corresponding
+assistant runs at **2026-11-01 17:32:13 UTC** and **19:43:57 UTC**. Both failed on their first
+inference call with `invalid_response`, executed zero tools and persisted no matching reminder
+plan. The requested reminder therefore must not be represented as scheduled.
+
+Two later owner turns at **2026-11-02 03:44 UTC** completed successfully, including one validated
+workflow update. This rules out a continuous Telegram, database or worker outage, but does not by
+itself establish provider reliability. The deployed `25f8959` gateway maps several invalid or
+empty completion shapes to the same `invalid_response` code, so the retained trace cannot prove
+the provider finish reason. The development branch now distinguishes output-limit and filtered
+responses. Its retained real-provider attempts exhausted a 2,400-token allowance, while the
+documented integrated trajectory passed with a bounded 4,096-token allowance; this makes the
+owner trial's 1,200-token ceiling a leading explanation, not a confirmed historical cause.
+
+No production data, model configuration, deployment, scheduler or external message was changed
+during this diagnosis. The live reminder remains absent. A production correction still requires
+an owner-authorized, backed-up rollout of a tested release/profile and a fresh channel-level
+verification; the existing uncommitted schema-`0015` work was not deployed as an incident hotfix.
+
+## Continuity and intention evidence — November 1, 2026
+
+**Development status:** implemented and locally verified on `feat/continuity-intentions`, based
+on `ea9b74c`; changes are uncommitted and undeployed. Milestone 1 remains **Implemented, tested
+but not fully confirmed**. Full scope, limitations, reproduction and rollback:
+[`CONTINUITY_INTENTIONS.md`](CONTINUITY_INTENTIONS.md).
+
+### Reconciled baseline and incident findings
+
+- Private owner runtime is the pinned `25f8959` release, schema `0014`; the separate judge
+  runtime is `60bd905`, schema `0014`. Development `ea9b74c` includes the judge/Tavily source and
+  documentation updates. The suspended corrections stash `ee097774a2ac1f0203fe5df4f89447eba5ed48b9`
+  was inspected and selectively reimplemented; it is still retained.
+- Read-only incident inspection established that the essay utterance **was persisted** despite
+  an initial provider `invalid_response` and no tool executions. Later context contained only
+  recent messages and saved records, so the model lacked the older mention. The historical trace
+  does not establish that failure's provider finish reason.
+- The unexplained activity acknowledgement corresponded to a **real reflection/journal write**.
+  A generic receipt obscured the effect, and later context did not expose the persisted operation.
+  Private original records remain in ignored `.local/rollouts/continuity-intentions/`.
+
+### Implemented behavior
+
+- Bounded, owner-scoped historical mentions and recent persisted-operation evidence; mentions are
+  explicitly distinguished from saved commitments and completed actions. Corrections exclude linked
+  obsolete sources; deletion advances a separate forgetting cutoff. The correction evaluation
+  fixture now retains original-message provenance, matching a real corrected record.
+- Structured natural confirmations, reflection explanations, absolute deadline projections and
+  honest monitoring status. Technical IDs/versions remain in the inspector rather than final
+  wording context. Model failure acknowledges that the user's message survived.
+- Optional evidence annotations beside existing why/purpose/completion fields, plus reason,
+  timing reason, consequences, dependency and change reason where supported. Owner quotes,
+  inferred/derived/confirmed distinctions, revision history and stale-parent checks are retained.
+  Reason-only changes preserve authorized cadence and existing due work timing.
+- Compact motivation-aware context selection and briefings. Regression work caught and fixed
+  both purpose-only retrieval missing the commitment and metadata crowding out meaningful text.
+- Real inference exposed mismatched intention field schemas, ambiguous ID-in-reference handling,
+  missing compound-call sequencing, and an unresolved cadence question after declining check-ins.
+  Schemas now advertise supported fields; exact owned references retain version/isolation checks;
+  pending cadence context names the decision and cancellation path.
+
+### Verification and qualification
+
+- **624 backend tests passed in 132.70s**, including PostgreSQL runtime/worker journeys, scripted
+  Telegram replay, correction/forgetting, rejection, provenance, cadence and revision checks.
+  `uv run ruff check app tests` and `uv run mypy app` passed (44 modules).
+- **69 frontend tests** and TypeScript passed. No frontend source changes were needed.
+- Two **PostgreSQL** `0014 → 0015 → 0014` cycles on a fresh isolated database preserved all legacy
+  columns; the same loss-aware rehearsal passes on SQLite. Downgrade deliberately loses the new
+  annotations/cutoff, not the original scalar fields.
+- **Integrated live pass**, `.local/rollouts/nebius-acceptance/20261101T213559Z/results.json`:
+  actual HTTP API, PostgreSQL `0015`, real `nvidia/Nemotron-3.5-Super-VL`, native tool calls,
+  independent worker, API stop/restart and inspector verification. Failed input and four intervening
+  messages were explicitly injected synthetic fixtures; subsequent interpretation was real Nebius.
+  Verified older mention recall without a fabricated task; actual reflection write/explanation;
+  offer → compound acceptance/read; declined check-ins closing the pending proposal; reason and
+  next-step correction retaining the overall goal and old revision; exact November 7, 18:00 UTC
+  deadline; and browser/API-independent one-time delivery with no duplicate on a repeat sweep.
+- Passing profile: **low reasoning, 4,096-token ceiling, 15s/call, at most two calls/turn**.
+  **13 actual calls**, 209,299 input / 8,240 output tokens, **$0.0702057** uncached estimate for
+  this passing run only. Worker inference and Azure calls: **zero**. Reminder delivery lag:
+  **3.3272s**; action `d5dbdeef-c54a-481f-b213-0738bc99d173`, one attempt, repeat sweep executed zero.
+- Earlier attempts are retained, including `output_limit` at 2,400 tokens, disabled-reasoning
+  missed actions, schema/reference failures, and overly strict harness wording checks. A proposed
+  4,096 configuration was initially rejected by the existing cap before any inference; the
+  development gateway now explicitly permits this bounded opt-in allowance and rejects 4,097.
+  Defaults and deployed configurations were not changed. This is one successful integrated
+  trajectory, **not a reliability percentage or proof of production acceptance**.
+
+Remaining: successful compound replies can still duplicate confirmations/questions; conservative
+saved-only choices can bypass asking for a cadence; retrieval remains lexical and bounded;
+paraphrase/short-confirmation interpretation remains model-dependent. General adaptive Eren/Scribe
+behavior and longitudinal owner acceptance remain outside this completed verification slice.
+Private and judge deployments retain their existing code/configuration/schema; production rollout
+requires its own backup, migration and owner-trial decision.
+
 ## Submission provenance clarification
 
 The owner clarified that the original working repository was created for Mica itself, rather

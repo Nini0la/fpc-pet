@@ -11,6 +11,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from .intentions import (
+    CommitmentIntentionNote,
+    annotate,
+    attention_context,
+    link_evidence,
+)
+from .intentions import (
+    project as intention_view,
+)
 from .models import (
     Commitment,
     CommitmentRevision,
@@ -26,6 +35,22 @@ from .temporal import When, resolve_when
 
 OPEN = {"open", "in_progress", "waiting"}
 TERMINAL = {"complete", "completed", "cancelled", "abandoned"}
+SCHEDULE_FIELDS = {
+    "state",
+    "deleted",
+    "due_at",
+    "due_bound",
+    "ambiguity",
+    "availability",
+    "followup_enabled",
+    "followup_minutes",
+    "max_followups",
+    "estimated_effort_minutes",
+    "available_minutes",
+    "dependencies",
+    "next_action",
+    "title",
+}
 PERIODS = {"night": (0, 6), "morning": (6, 12), "afternoon": (12, 17), "evening": (17, 24)}
 FIELDS = (
     "title",
@@ -46,6 +71,7 @@ FIELDS = (
     "followup_minutes",
     "max_followups",
     "completed_at",
+    "intention_context",
 )
 
 
@@ -93,6 +119,7 @@ class PlanFields(BaseModel):
     followup_minutes: int | None = Field(default=None, ge=1, le=10080)
     max_followups: int | None = Field(default=None, ge=0, le=10)
     estimated_effort_minutes: int | None = Field(default=None, ge=1, le=10080)
+    intentions: list[CommitmentIntentionNote] = Field(default_factory=list, max_length=6)
 
 
 class CreateCommitment(PlanFields):
@@ -205,7 +232,9 @@ def plan_next(user: User, item: Commitment, now: datetime) -> datetime | None:
     return next_allowed(user, item.availability or {}, max(earliest, candidate))
 
 
-def invalidate_and_replan(db: Session, item: Commitment, now: datetime) -> None:
+def invalidate_and_replan(
+    db: Session, item: Commitment, now: datetime, *, preserve_due=False
+) -> None:
     db.execute(
         update(ScheduledAction)
         .where(
@@ -216,7 +245,7 @@ def invalidate_and_replan(db: Session, item: Commitment, now: datetime) -> None:
         .values(state="cancelled", reason="commitment_changed", lease_token=None, lease_until=None)
     )
     user = db.get(User, item.user_id)
-    if user is not None:
+    if user is not None and not preserve_due:
         item.next_relevant_moment = plan_next(user, item, now)
     if item.deleted:
         db.execute(
@@ -335,7 +364,29 @@ def field_changes(
     return changes
 
 
-def describe(item: Commitment, user: User) -> dict[str, Any]:
+def describe(item: Commitment, user: User, db=None, now=None) -> dict[str, Any]:
+    if item.deleted or item.state not in OPEN:
+        monitoring = "paused" if item.state == "paused" else "closed"
+    elif not item.followup_enabled:
+        monitoring = "saved_only"
+    elif not user.checkins_enabled:
+        monitoring = "checkins_disabled"
+    elif item.ambiguity != "none":
+        monitoring = "deadline_unclear"
+    elif item.followup_count >= item.max_followups:
+        monitoring = "limit_reached"
+    else:
+        monitoring = "scheduled" if item.next_relevant_moment else "not_scheduled"
+    due = utc(item.due_at).astimezone(ZoneInfo(user.timezone)) if item.due_at else None
+    if item.ambiguity != "none":
+        deadline = "Deadline unclear; please confirm the date and time."
+    elif due:
+        date_text = due.strftime("%d %b %Y")
+        if item.due_granularity != "date":
+            date_text += due.strftime(" at %H:%M %Z")
+        deadline = ("Before " if item.due_bound == "exclusive" else "Due ") + date_text
+    else:
+        deadline = "Deadline not confirmed." if item.deadline_hint else "No deadline set."
     return {
         "id": item.id,
         "version": item.version,
@@ -350,21 +401,30 @@ def describe(item: Commitment, user: User) -> dict[str, Any]:
         else None,
         "due_bound": item.due_bound,
         "due_granularity": item.due_granularity,
+        "deadline_display": deadline,
         "timezone": user.timezone,
         "ambiguity": item.ambiguity,
         "constraints": item.constraints,
         "availability": item.availability,
         "followup_enabled": item.followup_enabled,
+        "monitoring_status": monitoring,
         "followup_minutes": item.followup_minutes,
         "followup_count": item.followup_count,
         "max_followups": item.max_followups,
         "next_check_at": utc(item.next_relevant_moment).isoformat()
-        if item.next_relevant_moment
+        if monitoring == "scheduled" and item.next_relevant_moment is not None
+        else None,
+        "next_check_local": utc(item.next_relevant_moment)
+        .astimezone(ZoneInfo(user.timezone))
+        .isoformat()
+        if monitoring == "scheduled" and item.next_relevant_moment is not None
         else None,
         "importance": item.importance,
         "available_minutes": item.available_minutes,
         "blockers": item.dependencies,
         "related_thread_id": item.related_thread_id,
+        "intention_context": intention_view(item, db),
+        **({"attention_context": attention_context(item, now)} if now is not None else {}),
     }
 
 
@@ -420,6 +480,21 @@ def create(
             )
         )
         changes = field_changes(args, user, text, now, trusted=False, semantic=semantic)
+        for note in args.intentions:
+            if (
+                note.field in {"purpose", "completion_criteria"}
+                and getattr(args, note.field) is None
+            ):
+                changes[note.field] = note.text
+        changes["intention_context"] = annotate(
+            db,
+            user_id,
+            args.intentions,
+            source_id,
+            now,
+            {field: changes.get(field) for field in ("purpose", "completion_criteria")},
+            parent_id=args.project_id,
+        )
     except ValueError as error:
         return reject("clarification_required", str(error))
     if timing.ambiguity != "none":
@@ -427,6 +502,12 @@ def create(
             timing.ambiguity,
             "What exact date and time do you mean? I haven't saved a guessed deadline.",
         )
+    # Retain an unanswered scheduling choice, never invent a default daily cadence.
+    needs_schedule = (
+        semantic and args.followup_enabled is not False and args.followup_minutes is None
+    )
+    if needs_schedule:
+        changes["followup_enabled"] = False
     item = Commitment(
         user_id=user_id,
         title=args.title,
@@ -448,6 +529,7 @@ def create(
     db.add(item)
     db.flush()
     item.next_relevant_moment = plan_next(user, item, now)
+    link_evidence(db, item, now)
     revision(db, item, "message", source_id)
     db.add(
         ProvenanceLink(
@@ -460,7 +542,7 @@ def create(
         )
     )
     allowed_ids.add(item.id)
-    return {
+    result = {
         "status": "saved",
         "id": item.id,
         "kind": "commitment",
@@ -469,6 +551,21 @@ def create(
         "needs_checkin_opt_in": bool(item.followup_enabled and not user.checkins_enabled),
         "context": describe(item, user),
     }
+    if needs_schedule:
+        from .continuation import save_proposal
+
+        result["followup_proposal"] = save_proposal(
+            db,
+            user_id,
+            "update_commitment",
+            f"Arrange check-ins: {item.title}",
+            {"id": item.id, "version": item.version, "action": "update", "followup_enabled": True},
+            source_id,
+            now,
+            state="needs_clarification",
+        )
+        result["followup_question"] = "Would you like a check-in? If so, when or how often?"
+    return result
 
 
 def resolve(
@@ -558,6 +655,16 @@ def change(
                 "completion_not_confirmed", "Are you confirming that this commitment is complete?"
             )
     try:
+        if (
+            semantic
+            and args.followup_enabled is True
+            and args.followup_minutes is None
+            and not item.followup_enabled
+        ):
+            return reject(
+                "followup_schedule_required",
+                "Your commitment is saved. How often should I check in?",
+            )
         changes = field_changes(args, user, text, now, trusted=trusted, semantic=semantic)
         if args.clear_deadline and (args.deadline_text or args.deadline):
             return reject(
@@ -637,14 +744,42 @@ def change(
             )
     except ValueError as error:
         return reject("clarification_required", str(error))
-    if not changes:
+    if not changes and not args.intentions:
         return reject("no_changes", "What would you like to change about this commitment?")
-    changes.update(last_touched_at=now, followup_count=0)
+    try:
+        for note in args.intentions:
+            if (
+                note.field in {"purpose", "completion_criteria"}
+                and getattr(args, note.field) is None
+            ):
+                changes[note.field] = note.text
+        prior_intentions = dict(item.intention_context or {})
+        prior_intentions.pop("change_reason", None)  # Earlier reasons remain in revision snapshots.
+        changes["intention_context"] = annotate(
+            db,
+            user_id,
+            args.intentions,
+            source_id,
+            now,
+            {field: changes.get(field) for field in ("purpose", "completion_criteria")},
+            existing=prior_intentions,
+            parent_id=item.related_thread_id,
+            trusted=trusted,
+            previous_scalars={
+                field: getattr(item, field) for field in ("purpose", "completion_criteria")
+            },
+        )
+    except ValueError as error:
+        return reject("intention_evidence_required", str(error))
+    if set(changes) & SCHEDULE_FIELDS:
+        changes["followup_count"] = 0
+    changes["last_touched_at"] = now
     revision(db, item, "before_change", source_id)
     result = atomic_update(db, Commitment, item.id, user_id, item.version, changes)
     if result is not MutationResult.UPDATED:
         return reject("version_conflict", "That commitment changed; please refresh it.")
     db.refresh(item)
+    link_evidence(db, item, now)
     revision(db, item, "owner_control" if trusted else "message", source_id)
     db.add(
         ProvenanceLink(

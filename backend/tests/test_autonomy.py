@@ -16,6 +16,7 @@ from app.clock import FakeClock
 from app.commitments import ChangeCommitment, change, utc
 from app.models import (
     AgentEvent,
+    AssistanceRun,
     Commitment,
     CommitmentRevision,
     DailyBriefing,
@@ -29,7 +30,7 @@ from app.responsibilities import lock_user
 from app.scheduler import prepare, tick
 
 NOW = datetime(2026, 10, 26, 9, tzinfo=timezone.utc)
-INTENTION = "I need to finish my presentation before 9pm tomorrow. Help me stay on track."
+INTENTION = "I need to finish my presentation before 9pm tomorrow. Check in every 60 minutes."
 
 
 @pytest.fixture(autouse=True)
@@ -91,6 +92,7 @@ def capture(client, monkeypatch):
                         "purpose": "Explain my research",
                         "next_action": "Prepare the outline",
                         "followup_enabled": True,
+                        "followup_minutes": 60,
                     },
                 ),
             ),
@@ -490,7 +492,9 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
         )
     )
     answer = send(pg_client, "no-write", "I've finished the presentation.")
-    assert "write_permission_required" in answer["content"]
+    assert (
+        "permission" in answer["content"] and "write_permission_required" not in answer["content"]
+    )
     assert pg_client.get("/api/autonomy").json()["commitments"][0]["state"] == "open"
     with main.SessionLocal.begin() as db:
         owner = db.scalar(select(User))
@@ -514,7 +518,11 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
     answer = send(
         pg_client, "ambiguous", "I've finished the presentation.", allow_memory_write=True
     )
-    assert "ambiguous_reference" in answer["content"]
+    assert "Which commitment" in answer["content"]
+    assert "ambiguous_reference" not in answer["content"]
+    with main.SessionLocal() as db:
+        run = db.scalar(select(AssistanceRun).where(AssistanceRun.message_id == answer["id"]))
+        assert run.tool_results[0]["reason"] == "ambiguous_reference"
     assert all(
         row["state"] == "open" for row in pg_client.get("/api/autonomy").json()["commitments"]
     )
@@ -562,7 +570,7 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
     answer = send(
         pg_client, "unnamed-correction", "The deadline is Friday at 6pm.", allow_memory_write=True
     )
-    assert "Updated commitment" in answer["content"]
+    assert f"Updated “{item['title']}”" in answer["content"]
     with main.SessionLocal.begin() as db:
         owner = db.scalar(select(User))
         db.add(Commitment(user_id=owner.id, title=item["title"], confidence=1, derivation="test"))
@@ -584,7 +592,8 @@ def test_tools_require_write_permission_and_disambiguation(pg_client, monkeypatc
         f"For {item['title']}, move it to Friday at 6pm.",
         allow_memory_write=True,
     )
-    assert "ambiguous_reference" in answer["content"]
+    assert "Which commitment" in answer["content"]
+    assert "ambiguous_reference" not in answer["content"]
     assert (
         pg_client.post(
             f"/api/commitments/{item['id']}/lifecycle",

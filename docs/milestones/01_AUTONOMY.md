@@ -3,7 +3,7 @@
 **Status:** Implemented, tested but not fully confirmed
 
 **Authority:** `docs/MICA_TARGET.md`  
-**Development inference:** Existing Azure model provider  
+**Development inference:** Nebius Token Factory / NVIDIA Nemotron; Azure manual comparison/rollback
 **Objective:** Turn Mica's existing features into one reliable, event/schedule-driven loop that carries intentions from conversation to authorized follow-through.
 
 **Owner status decision:** implementation and recorded tests are acknowledged; full real-world
@@ -18,6 +18,12 @@ baseline. Integration design, implementation and evidence must be recorded separ
 existing Azure acceptance results.
 The immediate implementation priority is now **Nebius Token Factory + NVIDIA Nemotron**;
 see `docs/NEBIUS.md`. Hermes remains a subsequent runtime-integration workstream.
+
+**November 1 continuation:** the current scoped implementation is conversation/effect recall,
+truthful confirmations and suspended corrections, optional intention provenance, then bounded
+accountability/briefing use. Follow `docs/CONTINUITY_INTENTIONS.md` for the current A–D work slice,
+actual source/deployment separation, verification and limits. Retain this milestone's acceptance
+status; further runtime integration and full adaptive companion work remain separate.
 
 ## 0. Your assignment
 

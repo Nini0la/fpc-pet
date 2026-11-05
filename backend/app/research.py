@@ -16,6 +16,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from .intentions import context_notes
 from .models import AssistanceRun, Commitment, Thread
 
 
@@ -220,6 +221,7 @@ def execute(db, owner, args, context, now):
             "question": "Research is unavailable right now. I haven't verified any new findings.",
         }
     goal_data = {"id": goal.id, "title": goal.title}
+    goal_data["intention_context"] = context_notes(goal, db)
     if isinstance(goal, Thread):
         goal_data.update(
             description=goal.description, purpose=goal.why, next_action=goal.next_action

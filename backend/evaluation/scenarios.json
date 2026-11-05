@@ -24,7 +24,7 @@
     "id": "correction",
     "context_reset_at": "2026-10-01T12:03:00+00:00",
     "source_facts": [
-      {"type": "thread", "id": "project-exhibit", "title": "Mosaic exhibit", "kind": "project", "version": 2, "description": "The corrected venue is Cedar Hall. This current record supersedes the old venue."}
+      {"type": "thread", "id": "project-exhibit", "title": "Mosaic exhibit", "kind": "project", "version": 2, "description": "The corrected venue is Cedar Hall. This current record supersedes the old venue.", "source_id": "message-old-venue"}
     ],
     "old_conversation": [
       {"id": "message-old-venue", "role": "user", "content": "The Mosaic exhibit venue is Birch Hall."}
@@ -37,7 +37,7 @@
     "expected_strings": ["Cedar Hall"],
     "forbidden_strings": ["Birch Hall"],
     "source_ids": ["project-exhibit"],
-    "review_notes": "The venue was corrected in the stored record at 2026-10-01T12:03:00Z, after the three messages at 12:00, 12:01, and 12:02. The seeded version 2 and user context_reset_at represent the persisted post-correction state: production excludes those older messages, while the evaluation baseline deliberately ignores the reset. Use Cedar Hall; a mere mention of the obsolete venue is not necessarily a false claim."
+    "review_notes": "The venue was corrected in the stored record at 2026-10-01T12:03:00Z, after the three messages at 12:00, 12:01, and 12:02. Version 2 retains the original message provenance, as an actual correction does. context_reset_at excludes older recent turns; historical retrieval excludes sources linked to the corrected record while preserving unrelated history. The baseline deliberately ignores these safeguards. Cedar Hall is the current stored value; the original source pointer does not prove the corrected venue."
   },
   {
     "id": "unknown-memory",

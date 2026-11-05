@@ -1,7 +1,8 @@
 """Bounded authoritative current state plus short-term conversation context.
 
-Production includes at most four raw messages strictly after the user's latest
-memory reset, so corrections/deletions suppress stale transcripts. Raw content is
+Production includes at most four recent messages after the correction reset and two historical
+mention excerpts after the forgetting cutoff. Corrected record sources are excluded separately.
+Raw content is
 request-only, never manifest evidence, and authoritative current state overrides
 it. ``recent_only=True`` is an explicit evaluation baseline, NOT a production mode:
 it replays at most four raw messages without the production correction cutoff.
@@ -16,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import case, false, func, or_, select
+from sqlalchemy import Text, case, cast, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -34,7 +35,7 @@ from app.models import (
     User,
 )
 
-POLICY_VERSION = "context-v2"
+POLICY_VERSION = "context-v3-continuity"
 MAX_RECORDS = 12
 MAX_RECORD_CHARS = 1500
 CANDIDATES_PER_TYPE = 40
@@ -73,6 +74,33 @@ def _truncate(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]
     return {**record, **{key: record[key][:low] for key in fields}}
 
 
+def _fit_intention_metadata(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """Keep meaningful plan text ahead of optional diagnostics; never drop its evidence basis."""
+    def fits():
+        return _size({**record, **{key: record[key][:200] for key in fields}}) <= MAX_RECORD_CHARS
+
+    if "intention_context" not in record or fits():
+        return record
+    record = {**record, "intention_details_omitted": True}
+    record.pop("attention_context", None)
+    if fits():
+        return record
+    record["intention_context"] = {
+        field: {key: value[:100] if key == "text" else value
+                for key, value in note.items() if key in {"basis", "text"}}
+        for field, note in record["intention_context"].items()
+    }
+    for field in list(record["intention_context"]):
+        if fits():
+            break
+        if field not in {"why", "purpose", "completion_criteria"}:
+            record["intention_context"].pop(field)
+    if not fits():
+        # The manifest retains the full selected provenance; one pointer suffices in this view.
+        record["sources"] = record["sources"][:1]
+    return record
+
+
 def build_context(
     db: Session,
     user_id: str,
@@ -90,8 +118,7 @@ def build_context(
     case-insensitive word matches (no stemming/vectors) before candidate limits.
     Manifest character/token counts describe serialized payload, not the manifest.
     Budgets too small for the envelope raise ValueError rather than exceed the cap.
-    Recent messages share these budgets and may include the current turn, since
-    this builder receives no current message ID to exclude.
+    Recent messages, historical mentions and operation evidence share the existing character budget.
     """
     active = None
     if active_thread_id is not None:
@@ -152,6 +179,8 @@ def build_context(
             "candidates_per_type": CANDIDATES_PER_TYPE,
             "sources_per_record": MAX_SOURCES,
             "recent_messages": 4,
+            "historical_mentions": 2,
+            "recent_operations": 2,
             "query_terms": 24,
             "recent_only": recent_only,
             "conversation_state_max_chars": 5000,
@@ -186,11 +215,62 @@ def build_context(
     )
     if not recent_only and profile is not None and profile.context_reset_at is not None:
         messages_query = messages_query.where(Message.created_at > profile.context_reset_at)
-    messages = db.execute(
-        messages_query.order_by(
-            Message.created_at.desc(), Message.ordinal.desc(), Message.id.desc()
-        ).limit(4)
+    messages = list(
+        db.execute(
+            messages_query.order_by(
+                Message.created_at.desc(), Message.ordinal.desc(), Message.id.desc()
+            ).limit(4)
+        )
     )
+    if not recent_only:
+        from .continuity import matching_mentions, recent_operations
+
+        assert profile is not None
+        terms = list(
+            dict.fromkeys(
+                word for word in re.findall(r"[a-z0-9_]+", text.lower()) if word not in _STOP_WORDS
+            )
+        )[:24]
+        payload["conversation_mentions"] = []
+        payload["recent_operations"] = []
+        payload["recall_scope"] = (
+            "Bounded lexical matches and recent turns after the memory cutoff. "
+            "No match does not prove the owner never said it."
+        )
+        for key, entries in (
+            (
+                "conversation_mentions",
+                matching_mentions(
+                    db,
+                    user_id,
+                    terms,
+                    [m.id for m in messages] + ([source_id] if source_id else []),
+                    profile.conversation_recall_after,
+                ),
+            ),
+            ("recent_operations", recent_operations(db, user_id, profile.context_reset_at)),
+        ):
+            for entry in entries:
+                payload[key].append(entry)
+                if (
+                    len(payload[key]) > 2
+                    or _size(payload) > max_chars
+                    or _size(payload[key]) > 2500
+                ):
+                    payload[key].pop()
+                    excluded.append({"id": entry["id"], "type": key, "reason": "evidence_limit"})
+                else:
+                    included.append(
+                        {
+                            "id": entry["id"],
+                            "type": key,
+                            "version": None,
+                            "sources": [],
+                            "reason": "conversation_match"
+                            if key == "conversation_mentions"
+                            else "persisted_operation",
+                        }
+                    )
     for message in messages:
         data = _truncate(
             {
@@ -278,7 +358,14 @@ def build_context(
             active_ids.add(active.parent_thread_id)
         # A task can name the relevant project even when the project itself has
         # no matching words. Validate these references through the scoped Thread query.
-        task_score = lexical_score((Commitment.title,))
+        commitment_columns = (
+            Commitment.title,
+            Commitment.purpose,
+            Commitment.next_action,
+            Commitment.completion_criteria,
+            cast(Commitment.intention_context, Text),
+        )
+        task_score = lexical_score(commitment_columns)
         task_threads = (
             select(Commitment.related_thread_id)
             .where(
@@ -360,7 +447,7 @@ def build_context(
             (
                 Commitment,
                 "commitment",
-                (Commitment.title,),
+                commitment_columns,
                 or_(
                     Commitment.related_thread_id.in_(thread_ids),
                     Commitment.id.in_(delegated_ids | current_ids),
@@ -433,7 +520,10 @@ def build_context(
             data = {**reference, "version": record.version, "sources": sources}
             fields: tuple[str, ...]
             if kind == "thread":
+                from .intentions import context_notes
+
                 data.update(
+                    intention_context=context_notes(record, db),
                     title=record.title,
                     kind=record.kind,
                     state=record.state,
@@ -447,7 +537,20 @@ def build_context(
                 )
                 fields = ("title", "why", "what", "how")
             elif kind == "commitment":
+                from .commitments import describe as describe_commitment
+
+                assert profile is not None
+                from .intentions import attention_context, context_notes
+
+                authority = describe_commitment(record, profile, db)
                 data.update(
+                    intention_context=context_notes(record, db),
+                    **({"attention_context": attention_context(record, now)} if now else {}),
+                    due_local=authority["due_local"],
+                    deadline_display=authority["deadline_display"],
+                    due_granularity=record.due_granularity,
+                    ambiguity=record.ambiguity,
+                    monitoring_status=authority["monitoring_status"],
                     title=record.title,
                     state=record.state,
                     related_thread_id=(
@@ -465,9 +568,7 @@ def build_context(
                     constraints=[str(value)[:100] for value in (record.constraints or [])[:3]],
                     availability=record.availability,
                     followup_enabled=record.followup_enabled,
-                    next_check_at=record.next_relevant_moment.isoformat()
-                    if record.next_relevant_moment
-                    else None,
+                    next_check_at=authority["next_check_at"],
                 )
                 delegated = db.scalar(
                     select(Responsibility).where(
@@ -507,7 +608,7 @@ def build_context(
                     local_date=str(record.local_date),
                 )
                 fields = ("content",)
-            data = _truncate(data, fields)
+            data = _truncate(_fit_intention_metadata(data, fields), fields)
             payload["records"].append(data)
             if _size(data) > MAX_RECORD_CHARS or _size(payload) > max_chars:
                 payload["records"].pop()

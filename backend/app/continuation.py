@@ -10,7 +10,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import case, func, select, update
 
+from .commitments import describe as describe_commitment
 from .commitments import utc
+from .intentions import ReminderIntentionNote, annotate, link_evidence
+from .intentions import project as intention_view
 from .models import (
     Commitment,
     ConversationProposal,
@@ -66,6 +69,7 @@ class ScheduleReminder(Input):
         default_factory=list, max_length=4
     )
     availability_until: date | None = None
+    intentions: list[ReminderIntentionNote] = Field(default_factory=list, max_length=3)
 
 
 class ChangeReminder(Input):
@@ -81,6 +85,7 @@ class ChangeReminder(Input):
     )
     availability_until: date | None = None
     respect_quiet_hours: bool | None = None
+    intentions: list[ReminderIntentionNote] = Field(default_factory=list, max_length=3)
 
 
 class ProposeAction(Input):
@@ -132,7 +137,7 @@ def evidence(db, owner, target, source, derivation):
 
 
 def proposal_data(row):
-    return {
+    data = {
         "id": row.id,
         "version": row.version,
         "title": row.title,
@@ -142,6 +147,18 @@ def proposal_data(row):
         "source_message_id": row.source_message_id,
         "result": row.result,
     }
+    if (
+        row.state == "needs_clarification"
+        and row.tool_name == "update_commitment"
+        and row.arguments.get("followup_enabled") is True
+        and not row.arguments.get("followup_minutes")
+    ):
+        data["question"] = "Would you like a check-in? If so, when or how often?"
+        data["pending_decision"] = (
+            "Awaiting the owner's check-in choice. If declined, cancel this proposal; "
+            "the saved commitment stays open. If accepted, execute with the chosen cadence."
+        )
+    return data
 
 
 def plan_data(row, db=None):
@@ -159,6 +176,7 @@ def plan_data(row, db=None):
         "max_occurrences": row.max_occurrences,
         "respect_quiet_hours": row.respect_quiet_hours,
         "availability": row.availability,
+        "intention_context": intention_view(row),
     }
     if db is not None:
         action = db.scalar(
@@ -195,6 +213,11 @@ def referenced(db, model, owner, identifier, reference, states):
     query = query.where(model.state.in_(states))
     label = model.topic if model is ReminderPlan else model.title
     if reference:
+        # A model may put a selected record ID in the generic reference field.
+        # Resolve exact owned IDs before title matching; version checks still run in the caller.
+        exact_id = db.scalar(query.where(model.id == reference).with_for_update())
+        if exact_id is not None:
+            return exact_id
         exact = list(
             db.scalars(
                 query.where(func.lower(label) == func.lower(reference)).limit(2).with_for_update()
@@ -210,6 +233,14 @@ def referenced(db, model, owner, identifier, reference, states):
 def save_proposal(db, owner, tool, title, arguments, source, now, *, state="proposed"):
     if tool not in PROPOSABLE or len(json.dumps(arguments)) > 6000:
         return reject("unsupported_proposal", "That action cannot be proposed through chat.")
+    if "intentions" in arguments:
+        arguments = {
+            **arguments,
+            "intentions": [
+                {**note, "source_message_id": note.get("source_message_id") or source}
+                for note in arguments["intentions"]
+            ],
+        }
     row = ConversationProposal(
         user_id=owner,
         tool_name=tool,
@@ -242,6 +273,18 @@ def save_proposal(db, owner, tool, title, arguments, source, now, *, state="prop
 def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, store_missing=True):
     user = db.get(User, owner)
     reference = reference or message_time(db, source, now)
+    try:
+        intention_context = annotate(
+            db,
+            owner,
+            args.intentions,
+            source,
+            now,
+            {},
+            allowed={"reason", "timing_reason", "consequences", "change_reason"},
+        )
+    except ValueError as error:
+        return reject("intention_evidence_required", str(error))
     try:
         if len(set(args.blocked_periods)) == 4 and args.availability_until is None:
             raise ValueError("Which time period is available for this reminder?")
@@ -287,6 +330,7 @@ def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, 
     row = ReminderPlan(
         user_id=owner,
         topic=args.topic,
+        intention_context=intention_context,
         mode=args.mode,
         timezone=when.timezone or user.timezone,
         due_at=due,
@@ -312,6 +356,7 @@ def schedule(db, owner, args: ScheduleReminder, source, now, *, reference=None, 
     if row.next_due_at is None:
         row.state = "paused"
     evidence(db, owner, row.id, source, "explicit-personal-reminder")
+    link_evidence(db, row, now)
     return {
         "status": "saved",
         "kind": "reminder",
@@ -371,6 +416,20 @@ def change_plan(db, owner, args: ChangeReminder, source, now):
             if row.mode == "recurring"
             else max(utc(now), utc(row.due_at))
         )
+    try:
+        intentions = annotate(
+            db,
+            owner,
+            args.intentions,
+            source,
+            now,
+            {},
+            existing=row.intention_context,
+            allowed={"reason", "timing_reason", "consequences", "change_reason"},
+        )
+    except ValueError as error:
+        return reject("intention_evidence_required", str(error))
+    row.intention_context = intentions
     if args.topic is not None:
         row.topic = args.topic
     if args.blocked_periods is not None or "availability_until" in args.model_fields_set:
@@ -413,6 +472,7 @@ def change_plan(db, owner, args: ChangeReminder, source, now):
         .values(state="cancelled", reason="reminder_changed", lease_token=None, lease_until=None)
     )
     evidence(db, owner, row.id, source, "semantic-reminder-change")
+    link_evidence(db, row, now)
     return {
         "status": "updated",
         "kind": "reminder",
@@ -569,7 +629,7 @@ def workflow(db, owner, args: ManageWorkflow, source, now, event_id):
                 "kind": "workflow",
                 "id": attempt.id,
                 "version": attempt.version,
-                "context": {"prompt": prompt},
+                "context": {"prompt": prompt, "activity": "vocabulary", "action": "start"},
                 "transition": {
                     "type": "vocabulary",
                     "id": attempt.id,
@@ -592,7 +652,13 @@ def workflow(db, owner, args: ManageWorkflow, source, now, event_id):
             "kind": "workflow",
             "id": prompt.id,
             "version": prompt.version,
-            "context": {"started": changed, "state": prompt.workflow_state},
+            "context": {
+                "started": changed,
+                "state": prompt.workflow_state,
+                "prompt": prompt.prompt,
+                "activity": "reflection",
+                "action": "start",
+            },
             **(
                 {
                     "transition": {
@@ -736,6 +802,18 @@ def workflow(db, owner, args: ManageWorkflow, source, now, event_id):
         "kind": "workflow",
         "id": row.id,
         "version": row.version,
+        "context": {
+            "activity": args.kind,
+            "action": args.action,
+            "state": row.workflow_state,
+            **(
+                {"local_date": str(row.local_date), "journal_id": row.journal_entry_id}
+                if args.kind == "reflection"
+                else {"word": item.display_word}
+                if args.action not in {"pause", "resume", "cancel"}
+                else {}
+            ),
+        },
         "transition": {
             "type": args.kind,
             "id": row.id,
@@ -846,13 +924,26 @@ def conversation_state(db, owner, now, source_id=None):
             "commitments",
             [
                 {
-                    "id": row.id,
-                    "version": row.version,
-                    "title": row.title,
-                    "state": row.state,
-                    "purpose": row.purpose,
-                    "next_action": row.next_action,
-                    "due_at": utc(row.due_at).isoformat() if row.due_at else None,
+                    key: value
+                    for key, value in describe_commitment(row, user, db).items()
+                    if key
+                    in {
+                        "id",
+                        "version",
+                        "title",
+                        "state",
+                        "purpose",
+                        "completion_criteria",
+                        "next_action",
+                        "constraints",
+                        "due_local",
+                        "due_bound",
+                        "deadline_display",
+                        "monitoring_status",
+                        "next_check_local",
+                        "followup_minutes",
+                        "intention_context",
+                    }
                 }
                 for row in intentions
             ],

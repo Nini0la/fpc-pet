@@ -12,6 +12,7 @@ from test_postgres_quality import postgres_url as postgres_url
 
 from app.agent import AgentRuntime
 from app.clock import FakeClock
+from app.gateway import GatewayError
 from app.models import (
     JournalEntry,
     ReflectionPrompt,
@@ -117,8 +118,8 @@ def create_via_telegram(client, setup):
                     {
                         "title": "Telegram trial",
                         "deadline_text": "before 9pm tomorrow",
-                    "followup_enabled": True,
-                    "followup_minutes": 15,
+                        "followup_enabled": True,
+                        "followup_minutes": 15,
                     },
                 ),
             ),
@@ -149,6 +150,50 @@ def test_shared_chat_tools_unattended_delivery_and_duplicate_updates(pg_client, 
     history = pg_client.get("/api/telegram").json()["deliveries"]
     assert all(row["state"] == "sent" and row["provider_message_id"] for row in history)
     assert any(row["action_id"] and row["message_id"] for row in history)
+
+
+def test_failed_telegram_mention_remains_recallable_without_saved_commitment(pg_client, setup):
+    import json
+
+    from app.models import Commitment, Message
+
+    main, gateway, transport = setup
+    connect(pg_client, setup)
+    essay = "I need to write an essay for Cosmos Institute before Wednesday next week."
+    gateway.scripts.append(GatewayError("invalid_response"))
+    incoming = update(2, essay)
+    cycle(main.SessionLocal, main.runtime, transport, BOT, [incoming])
+    cycle(main.SessionLocal, main.runtime, transport, BOT, [incoming])
+    assert len(gateway.calls) == 1
+    for number in range(3, 6):
+        gateway.scripts.append(reply("Thanks for the update."))
+        cycle(
+            main.SessionLocal,
+            main.runtime,
+            transport,
+            BOT,
+            [update(number, f"Other topic {number}")],
+        )
+    gateway.scripts.append(
+        reply("You mentioned the Cosmos essay. It wasn't saved as a commitment.")
+    )
+    cycle(
+        main.SessionLocal,
+        main.runtime,
+        transport,
+        BOT,
+        [update(6, "Did I mention writing an essay?")],
+    )
+    selected = json.loads(gateway.calls[-1]["messages"][1]["content"].split("\n", 1)[1])
+    assert any(essay == m["content"] for m in selected["conversation_mentions"])
+    assert "Cosmos essay" in transport.sent[-1][1]
+    with main.SessionLocal() as db:
+        assert db.scalar(select(Commitment)) is None
+        assert len(list(db.scalars(select(Message).where(Message.content == essay)))) == 1
+        assert (
+            db.scalar(select(TelegramInput).where(TelegramInput.update_id == 2)).state
+            == "succeeded"
+        )
 
 
 def test_private_owner_link_is_single_use_and_foreign_users_are_ignored(pg_client, setup):
@@ -214,7 +259,8 @@ def test_memory_permission_cannot_be_inferred_or_upgraded_after_ingestion(pg_cli
     assert response.status_code == 200
     gateway.scripts.append(reply("", tool("create_commitment", {"title": "Finish slides"})))
     cycle(main.SessionLocal, main.runtime, transport, BOT, [])
-    assert "write_permission_required" in transport.sent[-1][1]
+    assert "permission" in transport.sent[-1][1]
+    assert "write_permission_required" not in transport.sent[-1][1]
     assert pg_client.get("/api/autonomy").json()["commitments"] == []
 
 

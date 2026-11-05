@@ -51,7 +51,7 @@ def main():
     engine = create_engine(url)
     with Session(engine) as db:
         assert not db.scalar(select(func.count()).select_from(User)), "Use a fresh database"
-        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0014"
+        assert db.scalar(text("SELECT version_num FROM alembic_version")) == "0015"
     run = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     directory = ROOT / ".local/rollouts/nebius-acceptance" / run
     directory.mkdir(parents=True, mode=0o700)
@@ -80,8 +80,8 @@ def main():
         NEBIUS_API_KEY=values["NEBIUS_API_KEY"],
         NEBIUS_MODEL=MODEL,
         NEBIUS_BASE_URL=BASE,
-        NEBIUS_REASONING_EFFORT="low",
-        MODEL_MAX_OUTPUT_TOKENS="1200",
+        NEBIUS_REASONING_EFFORT=os.environ.get("NEBIUS_ACCEPTANCE_REASONING", "low"),
+        MODEL_MAX_OUTPUT_TOKENS="4096",
         MODEL_TIMEOUT_SECONDS="15",
         ACCESS_CODE="isolated-acceptance",
         SESSION_SECRET="a" * 64,
@@ -156,6 +156,11 @@ def main():
         report["revision"] = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip()
+        report["working_tree_dirty"] = bool(subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=ROOT, text=True
+        ).strip())
+        report["max_output_tokens"] = int(env["MODEL_MAX_OUTPUT_TOKENS"])
+        report["reasoning_effort"] = env["NEBIUS_REASONING_EFFORT"]
         api = start_api()
         with httpx.Client(
             base_url=f"http://127.0.0.1:{PORT}", headers={"origin": "http://testserver"}, timeout=45
@@ -202,6 +207,10 @@ def main():
                 return record
 
             login()
+            if os.environ.get("MICA_CONTINUITY_ACCEPTANCE") == "1":
+                from live_continuity_scenarios import exercise
+
+                exercise(client, engine, turn, report)
             setup = turn(
                 "context_setup",
                 "For this conversation: tomorrow I will show Mica to three classmates. "
@@ -373,6 +382,10 @@ def main():
             ),
             flush=True,
         )
+    except Exception as error:
+        report["status"] = "failed"
+        report["failure_type"] = type(error).__name__
+        raise
     finally:
         stop(api)
         stop(worker)

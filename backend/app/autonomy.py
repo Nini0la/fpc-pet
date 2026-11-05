@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .commitments import OPEN, available, next_allowed, plan_next, quiet, utc
+from .intentions import reason_phrase
 from .models import (
     Commitment,
     DailyBriefing,
@@ -167,8 +168,9 @@ def perform(
         content += f" Deadline: {bound} {due}."
     if item.next_action:
         content += f" Next action: {item.next_action}."
-    if item.purpose:
-        content += f" Why it matters: {item.purpose}."
+    reason = reason_phrase(item, user.timezone)
+    if reason:
+        content += " " + reason
     if item.dependencies:
         labels = [
             entry.get("label", "") for entry in item.dependencies if entry.get("kind") == "blocked"

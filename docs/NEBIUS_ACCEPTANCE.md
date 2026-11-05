@@ -1,5 +1,10 @@
 # Nemotron through Mica — three-interaction acceptance evidence
 
+**Historical report:** this page records the October 30 `0014`/1,200-token run. The development
+harness now targets `0015` and an explicitly bounded 4,096-token allowance, with an optional
+continuity journey. See [`CONTINUITY_INTENTIONS.md`](CONTINUITY_INTENTIONS.md) for its November 1
+evidence and reproduction. The recorded results below have not been relabeled as a new run.
+
 **Result: PASS**, October 30, 2026, approximately 08:22 UTC.
 
 This is a real provider/application/worker run, not a connection-only probe or a mocked model.

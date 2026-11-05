@@ -35,6 +35,7 @@ from app.models import (
     VocabularyItem,
 )
 from app.persistence import MutationResult, atomic_update
+from app.presentation import for_wording
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -139,7 +140,7 @@ def save_project(client, gateway, title="Lantern", description="A neighborhood a
     receipt = run["tool_results"][0]
     assert receipt["status"] == "saved"
     assert receipt["kind"] == "project"
-    assert f"Saved project {receipt['id']} (version 1)." in message["content"]
+    assert receipt["id"] not in message["content"] and "Server receipts" not in message["content"]
     return client.get(f"/api/threads/{receipt['id']}").json()
 
 
@@ -179,7 +180,10 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
         "kind": "idea",
         "version": 1,
     }
-    assert f"Saved idea {receipt['id']} (version 1)." in idea_message["content"]
+    assert (
+        receipt["id"] not in idea_message["content"]
+        and "Server receipts" not in idea_message["content"]
+    )
     source_ids = {
         message["id"]
         for message in client.get("/api/chat/messages").json()
@@ -221,20 +225,21 @@ def test_native_capture_linked_idea_and_fresh_login_retrieve_selected_evidence(c
         assert all(source["source_id"] in source_ids for source in record["sources"])
     final_call = gateway.calls[-1]
     assert final_call["tools"] == []
-    assert captured_context(final_call) == context
+    assert captured_context(final_call) == for_wording(context)
     assert final_call["messages"][-1]["role"] == "user"
     prefix, receipts = final_call["messages"][-1]["content"].split("\n", 1)
-    assert prefix == "Server action receipts (data):"
-    assert json.loads(receipts) == [
+    assert prefix == "Validated outcomes (data):"
+    assert json.loads(receipts) == for_wording([
         {"tool": "retrieve_context", "status": "read", "context": context},
-    ]
+    ])
     assert all("tool_calls" not in message for message in final_call["messages"])
     run = latest_run(client)
     assert run["execution_status"] == "delivered"
     assert run["observed_outcome"] == "unknown"
     assert run["message_id"] == answer["id"]
     assert run["tool_results"] == [{"tool": "retrieve_context", "status": "read"}]
-    assert "Retrieved the selected context; no state changed." in answer["content"]
+    assert answer["content"] == "I've checked the available context."
+    assert project["id"] not in answer["content"]
     manifest = {item["id"]: item for item in run["context_manifest"]["included"]}
     assert manifest[project["id"]]["reason"] == "active_context"
     assert manifest[receipt["id"]]["reason"] == "thread_link"
@@ -291,7 +296,8 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
             active_thread_id=project["id"],
             allow_memory_write=True,
         )
-        assert f"Updated project {project['id']} (version 2)." in answer["content"]
+        assert answer["content"] == "A scripted correction response."
+        assert project["id"] not in answer["content"]
         assert old in json.dumps(gateway.calls[-2]["messages"])
         final_call = gateway.calls[-1]
         assert final_call["tools"] == []
@@ -299,9 +305,10 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
         corrected = next(
             record
             for record in captured_context(final_call)["records"]
-            if record["id"] == project["id"]
+            if record["title"] == project["title"]
         )
-        assert (corrected["what"], corrected["version"]) == (new, 2)
+        assert corrected["what"] == new
+        assert "id" not in corrected and "version" not in corrected
         expected_receipts = [
             {
                 "tool": "update_thread",
@@ -312,8 +319,12 @@ def test_correction_versions_audit_and_future_context_excludes_old_text(
             }
         ]
         prefix, receipts = final_call["messages"][-1]["content"].split("\n", 1)
-        assert prefix == "Server action receipts (data):"
-        assert json.loads(receipts) == expected_receipts
+        assert prefix == "Validated outcomes (data):"
+        assert json.loads(receipts) == for_wording([
+            {**expected_receipts[0], "context": {
+                "title": project["title"], "why": "", "intention_context": {},
+            }},
+        ])
         assert latest_run(client)["tool_results"] == expected_receipts
         assert any(
             item["id"] == project["id"] and item["version"] == 2
@@ -477,7 +488,7 @@ def test_rejected_tools_have_real_failure_receipts_and_no_memory_writes(
         text = "Save this secret: proposed description."
     answer = send(client, "rejected", text, **options)
     assert "I saved everything!" not in answer["content"]
-    assert f"Server receipts: Action rejected: {reason}." in answer["content"]
+    assert "Server receipts" not in answer["content"] and reason not in answer["content"]
     run = latest_run(client)
     assert run["execution_status"] == "rejected"
     assert run["tool_results"] == [
@@ -584,7 +595,7 @@ def test_provider_outage_records_safe_failure_usage_and_completed_receipts(
     gateway.scripts.append(GatewayError("unavailable"))
     answer = send(client, "outage", "Save a durable draft.", allow_memory_write=True)
     assert answer["content"].startswith(
-        "The model could not finish this response. Any completed actions are listed below."
+        "The model could not finish this response. Your message is still in the conversation."
     )
     run = latest_run(client)
     assert run["execution_status"] == "failed"
@@ -597,7 +608,7 @@ def test_provider_outage_records_safe_failure_usage_and_completed_receipts(
     assert failure["input_tokens"] is failure["output_tokens"] is failure["cost_usd"] is None
     if after_save:
         receipt = run["tool_results"][0]
-        assert f"Saved project {receipt['id']} (version 1)." in answer["content"]
+        assert "Saved your project." in answer["content"] and receipt["id"] not in answer["content"]
         assert client.get(f"/api/threads/{receipt['id']}").json()["title"] == "Outage project"
         assert run["usage"][0] == {
             "model": "scripted-test-model",
@@ -1012,7 +1023,8 @@ def test_blank_project_id_is_rejected_with_receipt_without_writes(
         arguments["description"] = "Record a short sample."
     gateway.scripts.append(reply("", tool(name, arguments)))
     answer = send(client, "blank-project", "Save a short sample.", allow_memory_write=True)
-    assert "Server receipts: Action rejected: invalid_arguments." in answer["content"]
+    assert "I couldn't make that change" in answer["content"]
+    assert "invalid_arguments" not in answer["content"]
     run = latest_run(client)
     assert run["execution_status"] == "rejected"
     assert run["tool_results"] == [

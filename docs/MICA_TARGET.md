@@ -137,6 +137,14 @@ operational state, permissions and effects; Azure remains the verified compariso
 This is a scoped exception to the earlier Nebius/Hermes deferral, not acceptance of Milestone 1
 or authorization to implement the whole of Milestones 2–3.
 
+**November 1 owner-directed continuation:** after the submission snapshot, prioritize truthful
+conversation/effect recall, the suspended conversational corrections, optional source-bearing
+why/purpose/intention evidence, and bounded follow-through using the existing runtime. Current
+development inference is Nebius/Nemotron; Azure is a manual comparison/rollback option. Preserve
+the independent judge snapshot and private release while verifying local changes. This scoped
+continuation does not authorize a new agent framework or mark Milestone 1 accepted. See
+`docs/CONTINUITY_INTENTIONS.md` and the dated implementation status.
+
 ## 6. Non-negotiable design principles
 
 1. **Behavior first, technology second.** Do not introduce a platform merely because its features overlap with something Mica has already implemented.

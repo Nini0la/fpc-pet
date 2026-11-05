@@ -110,6 +110,36 @@ def atomic_update(
     values: dict[str, Any],
 ) -> MutationResult:
     """Tenant-scoped compare-and-swap for mutable owned records."""
+    if hasattr(model, "intention_context"):
+        from .intentions import annotate
+
+        if values.get("deleted"):
+            values = {**values, "intention_context": {}}
+        elif "intention_context" not in values and any(
+            k in values for k in ("purpose", "why", "completion_criteria")
+        ):
+            record = db.scalar(select(model).where(model.id == record_id, model.user_id == user_id))
+            if record:
+                changed = {
+                    k: values[k]
+                    for k in ("purpose", "why", "completion_criteria")
+                    if k in values and values[k] != getattr(record, k, None)
+                }
+                if changed:
+                    values = {
+                        **values,
+                        "intention_context": annotate(
+                            db,
+                            user_id,
+                            [],
+                            None,
+                            values.get("last_touched_at") or utcnow(),
+                            changed,
+                            existing=record.intention_context,
+                            trusted=True,
+                            allowed=set(changed),
+                        ),
+                    }
     if model is Commitment:
         from .commitments import revision
 
@@ -148,6 +178,11 @@ def atomic_update(
             .values(context_reset_at=values.get("last_touched_at") or utcnow())
         )
         if values.get("deleted") is True:
+            db.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(conversation_recall_after=values.get("last_touched_at") or utcnow())
+            )
             from .models import ConversationProposal
 
             db.execute(
@@ -175,11 +210,16 @@ def atomic_update(
             )
         db.expire_all()
         if model is Commitment:
-            from .commitments import invalidate_and_replan
+            from .commitments import SCHEDULE_FIELDS, invalidate_and_replan
 
             current = db.get(Commitment, record_id)
             if current is not None:
-                invalidate_and_replan(db, current, values.get("last_touched_at") or utcnow())
+                invalidate_and_replan(
+                    db,
+                    current,
+                    values.get("last_touched_at") or utcnow(),
+                    preserve_due=not bool(set(values) & SCHEDULE_FIELDS),
+                )
                 db.flush()
                 if not current.deleted:
                     revision(db, current, "state_update", None)
