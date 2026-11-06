@@ -1,5 +1,34 @@
 # Implementation Status
 
+## Owner-requested Azure provider restoration — November 5, 2026, 23:55 UTC
+
+At the owner's request, switched the active Telegram runtime back to Azure GPT-5.4.
+This was a provider-only change on the existing pinned `25f8959` release and schema `0014`;
+the reliability candidate has **not** been promoted.
+
+- Provider: `azure_openai`; deployment `edge-imci-gpt-5-4`.
+- Actual deployed connectivity call returned `gpt-5.4-2026-03-05`.
+- Active Modal app ID: `ap-Xpdsih9CiLibRuXhCLM2dP`; both worker heartbeats resumed.
+- Profile: reasoning `none`, 1,200 output tokens, 15-second per-call limit.
+- Acquired the bot's existing PostgreSQL advisory lock, verified no processing inputs or sending
+  deliveries, stopped the owner app, replaced its runtime Secret and redeployed the pinned source.
+- Database, owner identity, Telegram connection/generation/grants and quiet hours were preserved.
+  The existing December 31 cutoff was retained byte-for-byte; no historical window was restored.
+- The cloud worker delivered the service-update notice through the existing outbox:
+  Telegram provider message **169**, delivery `f15dc688-99c3-4686-a757-08d22f118a12`.
+- Private rollback/configuration and preflight/delivery evidence are under
+  `.local/rollouts/owner-reliability/` (`owner-runtime-before-azure.json`,
+  `azure-runtime-candidate.json`, `azure-restore-preflight.json`, `azure-restore-delivery.json`).
+  No credentials are included in this report. The canary is stopped; the judge deployment was
+  not changed. The optional local web/API provider configuration was not changed by this
+  Telegram-only restoration.
+
+The alternate canary model was `nvidia/nemotron-3-super-120b-a12b`, the text-only Nemotron 3
+Super model, distinct from `nvidia/Nemotron-3.5-Super-VL`. Its responsive serving path did not
+resolve all compound-request behavior. The latest candidate canary revision was `9c7fc22`;
+additional batch-action work is uncommitted and still requires acceptance. Provider restoration
+does not establish completion of the reliability mission or the broader autonomy milestone.
+
 ## Reliability and controlled owner release — November 5, 2026 (in progress)
 
 The owner authorized diagnosis, implementation, commits, a controlled Telegram trial and

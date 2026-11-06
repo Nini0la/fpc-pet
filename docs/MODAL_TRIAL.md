@@ -1,11 +1,17 @@
 # Owner-only bounded cloud trial
 
 - **Application revision:** `25f89598e9a7ed0e4afbe8a509968688f20da81f` (schema `0014`)
-- **Inference:** Nebius Token Factory, `nvidia/Nemotron-3.5-Super-VL`, low reasoning
+- **Inference:** Azure OpenAI, deployment `edge-imci-gpt-5-4`, reasoning `none`
 - **Start:** 2026-10-28 11:54:34 UTC
 - **End:** 2026-12-31 09:54:34 UTC (owner-authorized extension)
-- **Modal app:** `mica-owner-trial`, active app ID `ap-UiUS2EBdamKGyGCdV92nUI`
+- **Modal app:** `mica-owner-trial`, active app ID `ap-Xpdsih9CiLibRuXhCLM2dP`
 - **Dashboard:** https://modal.com/apps/nini-adegboyega/main/deployed/mica-owner-trial
+
+**Provider restored at owner request (2026-11-05, 23:55 UTC):** the existing pinned runtime now
+uses Azure again. A real cloud call reported `gpt-5.4-2026-03-05`; its service-update notice was
+accepted by Telegram as message 169. Code remains `25f8959`, schema remains `0014`, and the
+December 31 window is preserved. Current private runtime configuration and rollback evidence
+are recorded in `docs/IMPLEMENTATION_STATUS.md`. The reliability candidate remains unpromoted.
 
 **Latest cutoff extension (2026-10-30):** the owner requested December 31. The existing time of
 day was retained, the explicit authorization bound was updated, and fresh containers confirmed
@@ -35,7 +41,7 @@ The original app `ap-1yObYNST6QMQ207oajaSga` is stopped. The earlier
 `.local/releases/semantic-owner-final/` release is retained for recovery.
 
 The existing Telegram adapter and personal scheduler now run in Modal against the owner's direct
-SSL Neon PostgreSQL connection. Nebius/Nemotron is now the inference provider. The Mac can be off during
+SSL Neon PostgreSQL connection. Azure GPT-5.4 is now the inference provider. The Mac can be off during
 the trial. Telegram remains owner-only and WhatsApp remains disabled. No public web endpoint or
 multi-user release was introduced; the optional local web UI/API use the same hosted database.
 
