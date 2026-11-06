@@ -1,17 +1,28 @@
 # Owner-only bounded cloud trial
 
-- **Application revision:** `25f89598e9a7ed0e4afbe8a509968688f20da81f` (schema `0014`)
+- **Application revision:** `cd988641c503ac0efda93d596d28d9d1187fcc6d` (schema `0016`)
 - **Inference:** Azure OpenAI, deployment `edge-imci-gpt-5-4`, reasoning `none`
 - **Start:** 2026-10-28 11:54:34 UTC
 - **End:** 2026-12-31 09:54:34 UTC (owner-authorized extension)
-- **Modal app:** `mica-owner-trial`, active app ID `ap-Xpdsih9CiLibRuXhCLM2dP`
+- **Modal app:** `mica-owner-trial`, active app ID `ap-pddMVnaIP3Ow8PdHyvNSOt`
 - **Dashboard:** https://modal.com/apps/nini-adegboyega/main/deployed/mica-owner-trial
 
-**Provider restored at owner request (2026-11-05, 23:55 UTC):** the existing pinned runtime now
-uses Azure again. A real cloud call reported `gpt-5.4-2026-03-05`; its service-update notice was
-accepted by Telegram as message 169. Code remains `25f8959`, schema remains `0014`, and the
-December 31 window is preserved. Current private runtime configuration and rollback evidence
-are recorded in `docs/IMPLEMENTATION_STATUS.md`. The reliability candidate remains unpromoted.
+**Reliability release promoted (2026-11-06, verified 03:04 UTC):** the controlled Azure canary,
+638 backend / 70 frontend tests, lint/type/build checks and isolated migration/rollback rehearsal
+passed. A fresh quiescent PostgreSQL backup preceded migration to `0016`; all original columns in
+792 rows / 33 tables were preserved. The exact release is
+`.local/releases/continuity-owner-20261106/`. Local web/API use the same release and Azure through
+its private `.env`; local background workers remain disabled. The root development `.env` was
+not rewritten. Both cloud heartbeats are healthy; actual GPT-5.4 connectivity and Telegram release
+notice **204** are verified. The current window, owner/link identity and permissions are preserved.
+The isolated canary is stopped; owner acceptance remains pending. Full evidence:
+[`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
+
+**Provider restored at owner request (2026-11-05, 23:55 UTC; historical):** the existing pinned runtime
+returned to Azure. A real cloud call reported `gpt-5.4-2026-03-05`; its service-update notice was
+accepted by Telegram as message 169. Code remained `25f8959`, schema remained `0014`, and the
+December 31 window was preserved. Private runtime configuration and rollback evidence
+are recorded in `docs/IMPLEMENTATION_STATUS.md`. The November 6 promotion above supersedes that state.
 
 **Latest cutoff extension (2026-10-30):** the owner requested December 31. The existing time of
 day was retained, the explicit authorization bound was updated, and fresh containers confirmed
@@ -24,7 +35,7 @@ local web/API now use the tested Nemotron profile. Cloud inspection and an actua
 confirmed Nebius and the exact NVIDIA model. Telegram link/grants and the trial-window hash were
 preserved. The Azure app `ap-5vkZd5oyjoX90MIqXLnosu` is stopped; private configuration backups are
 under `.local/rollouts/nebius-cutover/`. Azure is available for manual rollback only.
-Current local services and disabled fallback workers use `.local/releases/nebius-owner-trial/`.
+At that cutover local services used `.local/releases/nebius-owner-trial/`, now retained for rollback.
 
 **Applied authorized update (2026-10-29):** the owner requested publication/deployment
 of the semantic integration and extension through **2026-11-03 09:54:34 UTC**, retaining the
@@ -102,6 +113,28 @@ multi-user release was introduced; the optional local web UI/API use the same ho
 - At expiry, the bot stops until explicitly resumed. **The Neon database is not deleted.**
 
 ## Stop / resume / recovery
+
+### Current release rollback
+
+Retain schema `0016` when rolling back code: the pinned `25f8959` source was verified to read its
+additive columns. Downgrading to `0014` discards new intention annotations and recall-cutoff data.
+Never restore a pre-release dump over newer owner conversations as a routine rollback.
+
+1. Drain/stop the owner poller and scheduler under the existing bot/conversation locks, and stop
+   local API/frontend writers. The private `.local/promote_owner_release.py stop` uses these locks
+   and verifies no processing/sending/executing work before stopping the cloud app.
+2. Restore only `mica-owner-trial-runtime` from private
+   `.local/rollouts/owner-reliability/promotion-runtime-before.json`. It records the previous
+   **Azure** configuration and `25f8959`. Preserve `mica-owner-trial-window` and its December 31
+   cutoff; do not use older provider/window snapshots.
+3. Redeploy `deploy/modal_trial.py` from `.local/releases/nebius-owner-trial/`. Restore the matching
+   private runtime snapshot only after verifying the deployment. Retain the additive schema.
+4. Restore local LaunchAgent paths from `promotion-before-{api,frontend,worker,telegram}.plist`
+   in the private rollout directory, using an Azure-configured private environment for API and
+   fallback workers. Bootstrap only API/frontend; keep both local workers disabled while cloud
+   polling is active. Verify provider, bot identity, grants, cutoff and worker heartbeats.
+5. For disaster recovery, restore the fresh `owner-pre-promotion-0014-20261106.dump` into a separate
+   database first. Preserve newer production data and explicitly reconcile it before any switch.
 
 To stop cloud activity early:
 

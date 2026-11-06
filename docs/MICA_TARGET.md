@@ -145,6 +145,11 @@ the independent judge snapshot and private release while verifying local changes
 continuation does not authorize a new agent framework or mark Milestone 1 accepted. See
 `docs/CONTINUITY_INTENTIONS.md` and the dated implementation status.
 
+**November 5–6 owner-directed provider update:** the owner requested Azure GPT-5.4 again.
+The continuity/reliability release is now verified and deployed on Azure, including the local
+owner web/API. The independent judge snapshot remains on Nebius/Nemotron. This supersedes the
+November 1 owner-runtime provider choice, without changing Milestone 1's pending owner acceptance.
+
 ## 6. Non-negotiable design principles
 
 1. **Behavior first, technology second.** Do not introduce a platform merely because its features overlap with something Mica has already implemented.

@@ -3,7 +3,9 @@
 **Status:** Implemented, tested but not fully confirmed
 
 **Authority:** `docs/MICA_TARGET.md`  
-**Development inference:** Nebius Token Factory / NVIDIA Nemotron; Azure manual comparison/rollback
+**Current owner-release inference:** Azure GPT-5.4 (owner-directed November 5–6 restoration);
+independent judge snapshot remains on Nebius/Nemotron
+
 **Objective:** Turn Mica's existing features into one reliable, event/schedule-driven loop that carries intentions from conversation to authorized follow-through.
 
 **Owner status decision:** implementation and recorded tests are acknowledged; full real-world

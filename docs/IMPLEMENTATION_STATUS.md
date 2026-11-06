@@ -1,5 +1,106 @@
 # Implementation Status
 
+## Reliability release acceptance — November 6, 2026
+
+**Deployed owner release:** `cd988641c503ac0efda93d596d28d9d1187fcc6d`, schema `0016`.
+The controlled Azure trial, final checks and backed-up production promotion passed.
+This section supersedes the candidate/deployment state in the historical entries below.
+Milestone 1 remains **Implemented, tested but not fully confirmed**, pending owner confirmation.
+
+### Production promotion and handoff — 03:04 UTC
+
+- Active owner app: `mica-owner-trial`, **`ap-pddMVnaIP3Ow8PdHyvNSOt`**; bot **@QwenErringBot**.
+  Actual post-deployment Azure call returned **`gpt-5.4-2026-03-05`**, `finish_reason=stop`,
+  14 input / 4 output tokens, zero reasoning tokens. Runtime retains reasoning `none`,
+  1,200 output tokens and the 15-second per-call bound.
+- Exact clean release worktree: `.local/releases/continuity-owner-20261106/`, pinned `cd98864`.
+  Dependencies installed from lockfiles and its frontend production build passed. Local web/API
+  now run this release with a private release-local Azure environment; authenticated identity,
+  commitments, autonomy, Telegram and continuations reads, plus frontend HTTP, all returned 200.
+  Local scheduler and Telegram LaunchAgents remain unloaded/disabled.
+- Drained the existing bot advisory lock and owner conversation lock, verified no processing
+  inbox/sending outbox/executing scheduled work, then stopped cloud and local writers. Fresh
+  PostgreSQL 18 backup: `owner-pre-promotion-0014-20261106.dump`, SHA-256
+  **`828e6840cabc7c61722404679102e4739b6e7ec5c8328d62b188c50ef4048fd0`**.
+  Production `0014 → 0016` preserved every original column of **792 rows / 33 legacy tables**.
+- Verified owner identity, Telegram connection/generation/grants, timezone, quiet hours and routine
+  opt-ins. All legacy-column fingerprints, including the polling cursor, matched before restarting
+  writers. The December 31 **09:54:34 UTC** cutoff was preserved byte-for-byte (window SHA-256
+  `c4d7e0359ddcef18b12d4f86ef89a872e2705ccb2abacfd6001be509205bdb3e`).
+- Read-only checks against the migrated authoritative owner database recovered the original
+  October 30 essay source `fc368048-b08c-4895-ab69-8170e5b3885d`; Samuel's commitment still has
+  no structured deadline or authorized monitoring. No task completion/deadline was guessed.
+- The normal cloud outbox delivered one idempotent release notice: delivery
+  `fd42d141-421c-402f-8878-fca995c7bdf1`, Telegram **204**. Final inspection at 03:04 UTC showed
+  fresh scheduler/Telegram heartbeats, 182 messages and **76 sent deliveries**. This notice is an
+  operator update, not a synthetic owner conversation or proof of owner acceptance.
+- Canary stopped after retaining evidence. Its recovered reminder delivered once as Telegram
+  **199**, delivery `b4b81015-7bcd-4b1e-914b-c74f8f537959`. Read-only judge status remained active
+  on `60bd905`, Nemotron Super-VL, with external messaging disabled.
+- Private production evidence: `promotion-preflight.json`, `promotion-original-fingerprints.json`,
+  `promotion-migration.json`, `promotion-verification.json`, `promotion-local-services.json`,
+  `promotion-final-runtime.json`, and phase logs under `.local/rollouts/owner-reliability/`.
+  Rollout helper: `.local/promote_owner_release.py`; service verifier:
+  `.local/verify_owner_services.py`. Previous source, runtime Secret and LaunchAgents retained.
+
+**Owner confirmation next:** try a normal greeting; ask whether you mentioned the Cosmos essay;
+ask what was saved after a reflection; and make a compound request with an explicit reminder time.
+The engineering gates passed, but genuine owner-originated conversation on this release and
+longitudinal behavior remain the acceptance gate. See `docs/MODAL_TRIAL.md` for rollback.
+
+### Acceptance evidence
+
+- **638 backend tests passed in 159.41s**, including PostgreSQL tests with
+  `POSTGRES_TEST_URL=postgresql+psycopg:///mica_autonomy_test uv run pytest -q --tb=short`.
+  Ruff and mypy (45 modules) passed. **70 frontend tests**, TypeScript, ESLint and the
+  production Next.js build passed (`npm test`, `npm run typecheck`, `npm run lint`, `npm run build`).
+- The isolated `mica-owner-canary` used Azure `edge-imci-gpt-5-4`, reasoning `none`,
+  1,200 output tokens, the existing 15-second call bound, and schema `0016`. Its authenticated
+  replay ingress was **synthetic**; model interpretation, scheduler, outbox and labeled owner
+  Telegram deliveries were real. It never polled Telegram or changed the production update cursor.
+- **31 retained turn receipts verified**, including deliberately injected initial/final model
+  failures. Covered date-only reminder retention and exact-time clarification; three-clause input
+  retaining conversational mentions separately from the requested reminder; historical essay
+  recall without inventing a commitment; legacy title-only timing without a guessed deadline;
+  reflection capture and explanation; next-step/reason correction; retrospective completion and
+  repeated-completion idempotency; partial-success reporting and retry without duplicate records.
+- Proposal offer → compound acceptance/read → decline monitoring passed on `cd98864`:
+  Telegram receipts **201–203**. Earlier phases ran on its parent `aee5bde`; the final fix was
+  regression-tested and redeployed before this proposal gate. The canary exposed and prompted fixes
+  for a nonexistent reflection field, missing active-reflection answer capture, and advertised
+  presentation metadata being rejected inside proposed-action arguments.
+- Unattended check-in: action `ec87bcd6-3b9f-4d46-be00-6da19538a2b1`, delivery
+  `89025636-5c0b-43de-a142-12ec172cb0d6`, Telegram **193**. A repeat worker sweep and later
+  inspection still showed one delivery. The recovered one-time reminder also completed once;
+  execution `cf80d08f-9c8e-4a0a-8d7f-f7798dab5c23` has a sent Telegram receipt.
+- Existing tool validation/permissions remain authoritative. `perform_actions` expands at most
+  four actions into the existing sequential executor; it adds no scheduler or alternative runtime.
+  Batch overflows/nesting and same-turn approval of a newly created proposal are rejected.
+- Private, reproducible evidence: `.local/rollouts/owner-reliability/canary-azure_aee5bde_*.json`,
+  `canary-azure_proposal_fix_*.json`, `canary-durable-delivery.json`, `canary-final-state.json`,
+  `canary-acceptance-summary.json`; private driver `.local/run_owner_canary.py` and receipt verifier
+  `.local/verify_release_evidence.py`. No owner content or credentials are committed here.
+
+### Migration and rollback rehearsal
+
+A PostgreSQL 18 consistent custom-format owner backup was restored into the separate
+`mica_owner_rehearsal_20261106` database. Across `0014 → 0016 → 0014 → 0016`, all **792 rows in
+33 legacy tables** retained their original-column hashes. Guarded recall migration recovered the
+original essay mention, and the pinned `0014` code could read the additive `0016` schema.
+Backup SHA-256: `35d05c0f42707a08e2113cf71878897a3f4c050578c0abe2dffd432cb6d2e8f5`.
+Private evidence: `migration-rehearsal-results.json` and `owner-pre-rehearsal-0014.dump`.
+The production promotion used the separate fresh, quiescent backup above. Prefer **code rollback retaining
+the additive schema**: a schema downgrade discards new annotations/recall-cutoff data.
+
+### Remaining qualification
+
+These engineering replays are not genuine owner-originated Telegram acceptance. Greetings can
+still revisit pending proposals unnecessarily; compound replies can repeat confirmations. Recall
+is lexical and bounded, clock clarification is conservative, and interpretation remains
+model-dependent. Historical `invalid_response` traces cannot establish their exact provider finish
+reason retrospectively. New allowlisted diagnostics improve future diagnosis. No broad adaptive
+companion/planning capability or long-term reliability percentage is claimed.
+
 ## Owner-requested Azure provider restoration — November 5, 2026, 23:55 UTC
 
 At the owner's request, switched the active Telegram runtime back to Azure GPT-5.4.
