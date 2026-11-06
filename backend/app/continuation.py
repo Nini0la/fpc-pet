@@ -510,6 +510,8 @@ def resolve_proposal(db, owner, args: ResolveProposal, source, now, execute, sch
     )
     if row is None:
         return reject("unknown_proposal", "Which proposed action do you mean?")
+    if args.action == "execute" and row.source_message_id == source:
+        return reject("approval_required", "Please confirm that proposal in a new message first.")
     if args.version is not None and row.version != args.version:
         return reject("version_conflict", "That proposal changed; use its current version.")
     if row.state in {"executed", "cancelled"}:

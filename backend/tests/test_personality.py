@@ -46,6 +46,7 @@ def test_saved_temperament_reaches_both_model_calls_without_altering_tools(
     assert context["profile"]["name"] == "Pip"
     assert "Pip" not in first["messages"][0]["content"]
     assert {tool["function"]["name"] for tool in first["tools"]} == {
+        "perform_actions",
         "save_project",
         "save_idea",
         "update_thread",

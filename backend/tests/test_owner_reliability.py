@@ -212,3 +212,40 @@ def test_conversational_reflection_start_uses_actual_skill_prompt(pg_client, sce
     assert "reflection for" in answer["content"]
     with main.SessionLocal() as db:
         assert db.scalar(select(JournalEntry)).original_content == "Tiring day."
+
+
+def test_batched_reminder_retains_other_mentions_without_formal_capture(pg_client, scene):
+    main, gateway = scene
+    text = ("I have to write a first draft of my Cosmos essay today. Also I need to be reminded "
+            "to go netball at 7. And also work on world models today as well.")
+    answer = act(pg_client, gateway, "batch-mentions", text, "perform_actions", {
+        "actions": [{"tool_name": "schedule_reminder", "arguments": {"topic": "Netball"}}],
+        "mentions": ["write a first draft of my Cosmos essay today", "work on world models today"],
+    })
+    assert all(word in answer["content"] for word in ("Netball", "Cosmos", "world models"))
+    with main.SessionLocal() as db:
+        assert db.scalar(select(Commitment)) is None
+        assert db.scalar(select(ReminderPlan)) is None
+        assert db.scalar(select(func.count()).select_from(ConversationProposal)) == 1
+
+
+def test_batch_cannot_exceed_budget_nest_or_self_approve(pg_client, scene):
+    main, gateway = scene
+    actions = [{"tool_name": "create_commitment", "arguments": {
+        "title": f"Task {i}", "followup_enabled": False}} for i in range(4)]
+    gateway.scripts.append(reply("", tool("perform_actions", {"actions": actions}, "batch"),
+                                  tool("create_commitment", {"title": "Fifth"}, "fifth")))
+    answer = send(pg_client, "over-budget", "Save five tasks", allow_memory_write=True)
+    assert "limit was exceeded" in answer["content"]
+    act(pg_client, gateway, "nested", "Save tasks", "perform_actions", {
+        "actions": [{"tool_name": "perform_actions", "arguments": {"actions": actions}}]})
+    act(pg_client, gateway, "approval", "Offer to track the essay, ask before saving.",
+        "perform_actions", {"actions": [
+            {"tool_name": "propose_action", "arguments": {"title": "Track essay",
+                "tool_name": "create_commitment", "arguments": {"title": "Essay"}}},
+            {"tool_name": "resolve_proposal", "arguments": {"reference": "Track essay",
+                "action": "execute"}},
+        ]})
+    with main.SessionLocal() as db:
+        assert db.scalar(select(Commitment)) is None
+        assert db.scalar(select(ConversationProposal)).state == "proposed"

@@ -163,7 +163,11 @@ def inspect(case: str | None = None):
         owner = db.scalar(select(User).where(User.username == "owner"))
         result = {"revision": os.getenv("MICA_DEPLOYED_REVISION"),
                   "schema": db.scalar(text("select version_num from alembic_version")),
-                  "model": os.getenv("NEBIUS_MODEL"), "reasoning": os.getenv("NEBIUS_REASONING_EFFORT"),
+                  "provider": os.getenv("PROVIDER"),
+                  "model": os.getenv("NEBIUS_MODEL") if os.getenv("PROVIDER") == "nebius"
+                  else os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+                  "reasoning": os.getenv("NEBIUS_REASONING_EFFORT")
+                  if os.getenv("PROVIDER") == "nebius" else os.getenv("MODEL_REASONING_EFFORT"),
                   "max_tokens": os.getenv("MODEL_MAX_OUTPUT_TOKENS"), "ingress": "synthetic_replay",
                   "delivery": "actual_owner_telegram_dm", "polls_telegram": False,
                   "commitments": [describe(r, owner, db) for r in db.scalars(select(Commitment))],

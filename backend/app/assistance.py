@@ -7,7 +7,7 @@ import os
 import time
 from dataclasses import asdict, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select
@@ -134,7 +134,24 @@ class ReadContext(ToolInput):
     pass
 
 
+class ActionItem(ToolInput):
+    tool_name: Literal[
+        "save_project", "save_idea", "update_thread", "create_commitment", "update_commitment",
+        "get_commitments", "retrieve_context", "draft_responsibility", "schedule_reminder",
+        "update_reminder", "propose_action", "resolve_proposal", "manage_workflow", "research_goal",
+    ]
+    arguments: dict[str, Any]
+
+
+class PerformActions(ToolInput):
+    actions: list[ActionItem] = Field(min_length=1, max_length=MAX_TOOL_CALLS)
+    mentions: list[str] = Field(default_factory=list, max_length=4,
+        description="Other intentions only acknowledged: verbatim quotes from the current message. "
+                    "These do not create commitments or schedules.")
+
+
 TOOL_INPUTS: dict[str, type[BaseModel]] = {
+    "perform_actions": PerformActions,
     "save_project": SaveProject,
     "save_idea": SaveIdea,
     "update_thread": UpdateThread,
@@ -151,6 +168,13 @@ TOOL_INPUTS: dict[str, type[BaseModel]] = {
     "research_goal": ResearchGoal,
 }
 TOOL_DESCRIPTIONS = {
+    "perform_actions": "Use for a message containing several requests or intentions. Return all "
+    "needed operations in actions, each with an existing tool_name and its arguments. Use "
+    "that tool's argument schema, including real nested JSON objects. The actions run "
+    "sequentially under the same permissions and four-action limit, not as a second workflow. "
+    "Prioritize explicit reminders. Put merely stated work intentions in mentions as verbatim "
+    "quotes rather than automatically making commitments. Never nest perform_actions. "
+    "For acceptance plus a question, include resolve_proposal then get_commitments.",
     "research_goal": "Research a saved goal with Tavily Search and, by default, Extract the top "
     "source. Choose goal_id from the current selected thread/project/commitment context. Compose "
     "a focused query using that goal's actual preferences and constraints, not invented facts. "
@@ -164,7 +188,9 @@ TOOL_DESCRIPTIONS = {
     "save_idea": "Save a user-requested creative idea, optionally linked to an existing project.",
     "update_thread": "Correct the selected idea/project using its current id and version. "
     "Omit why/next_action unless changed by the owner; empty explicitly clears them.",
-    "create_commitment": "Save a definite owner intention/goal, its purpose, completion criteria "
+    "create_commitment": "Use on an explicit request to save/track or acceptance of an offer. "
+    "A mere 'I have to do X' is not automatically a capture request. Save the confirmed goal, "
+    "its purpose, completion criteria "
     "and next action. Prefer structured deadline (local date/time or relative seconds). "
     "Saving is distinct from proactive monitoring. Omit followup_enabled if undecided; false "
     "means the owner declined. To enable new follow-ups, supply an owner-authorized cadence in "
@@ -344,6 +370,8 @@ def _execute_tool(
         args = TOOL_INPUTS[name].model_validate(values)
     except (ValidationError, ValueError):
         return {"status": "rejected", "reason": "invalid_arguments"}
+    if isinstance(args, PerformActions):
+        return {"status": "rejected", "reason": "batch_requires_turn_context"}
     if name == "retrieve_context":
         return {"status": "read", "context": context}
     if isinstance(args, ListCommitments):
@@ -690,6 +718,10 @@ personal facts and shared history, not an obligation to pretend ignorance of gen
 For a greeting, greet the owner normally. Do not spontaneously recap unfinished requests or old
 relative deadlines. Let the owner choose the topic. When discussing older timing, include its
 original date or clearly label it historical; do not describe an old 'next Wednesday' as upcoming.
+For several requests or intentions in one message, use perform_actions. It lets you include all
+operations in ONE native tool call, even on models that emit only one tool call per response.
+An explicit reminder is an action; merely saying 'I have to write/work on X' can be retained in
+mentions as a verbatim quote, without creating a commitment. Never stop after the first clause.
 Current structured records override old conversation. Facts mean user-stated, not independently
 verified. Inferences/hypotheses are uncertain. Ground personal recollections in supplied sources.
 conversation_mentions are historical user utterances, NOT proof of a saved commitment or schedule.
@@ -935,10 +967,38 @@ def contextual_reply(
                 if key not in {"content", "tool_calls", "diagnostics"}
             }
         )
-        if len(first.tool_calls) > MAX_TOOL_CALLS:
+        calls = []
+        mentions: list[str] = []
+        invalid_batch = False
+        for call in first.tool_calls:
+            if call["function"]["name"] != "perform_actions":
+                calls.append(call)
+                continue
+            try:
+                values = json.loads(call["function"]["arguments"])
+                values.pop("response_text", None)
+                batch = PerformActions.model_validate(values)
+                if any(a.tool_name not in TOOL_INPUTS or a.tool_name == "perform_actions"
+                       for a in batch.actions):
+                    raise ValueError("Unsupported nested action")
+                for index, action in enumerate(batch.actions):
+                    calls.append({"id": f"{call['id'][:100]}:{index}", "type": "function",
+                        "parent_tool_call_id": call["id"], "function": {
+                            "name": action.tool_name, "arguments": json.dumps(action.arguments)}})
+                mentions.extend(q for q in batch.mentions if q.strip() and len(q) <= 300
+                                and normalize(q) in normalize(text)
+                                and SharedHistoryRecallSkill().allows_episodic_content(q))
+            except (ValueError, TypeError, AttributeError):
+                invalid_batch = True
+        trace.data["mentioned_intentions"] = [
+            {"source_message_id": source_id, "quote": q} for q in dict.fromkeys(mentions)][:4]
+        if invalid_batch:
+            run.execution_status = "rejected"
+            reply = "I couldn't validate those actions. Your full message is saved; no action ran."
+        elif len(calls) > MAX_TOOL_CALLS:
             run.execution_status = "limited"
             reply = "The requested tool-call limit was exceeded. No tool actions were executed."
-        elif first.tool_calls:
+        elif calls:
             messages.append(
                 {
                     "role": "assistant",
@@ -946,7 +1006,7 @@ def contextual_reply(
                     "tool_calls": first.tool_calls,
                 }
             )
-            for call in first.tool_calls:
+            for call in calls:
                 if call["function"]["name"] == "research_goal" and any(
                     item.get("tool") == "research_goal" for item in model_results
                 ):
@@ -996,8 +1056,8 @@ def contextual_reply(
                     elif (
                         effect.get("kind") == "commitment"
                         and effect.get("status") in {"saved", "updated"}
-                        and isinstance(wording, str)
-                        and wording.strip()
+                        and (call.get("parent_tool_call_id")
+                             or (isinstance(wording, str) and wording.strip()))
                     ):
                         natural_replies.append(confirmation(result))
                     elif isinstance(wording, str) and wording.strip():
@@ -1200,4 +1260,9 @@ def contextual_reply(
         or any(i in reply for i in identifiers(context.payload))
     ):
         reply = context_explanation(context.payload)
+    mention_receipts = trace.data.get("mentioned_intentions", [])
+    if mention_receipts:
+        reply += "\n\nOther parts kept in this conversation:\n" + "\n".join(
+            f"• “{item['quote']}”" for item in mention_receipts)
+        reply += "\nOnly the actions confirmed above were performed."
     return reply, run

@@ -92,6 +92,8 @@ class ResponseTrace:
                 {
                     "after_call_index": len(self.data["calls"]),
                     "tool_call_id": call["id"],
+                    **({"parent_tool_call_id": call["parent_tool_call_id"]}
+                       if call.get("parent_tool_call_id") else {}),
                     "name": call["function"]["name"],
                     "arguments": call["function"]["arguments"],
                     "result": result,
