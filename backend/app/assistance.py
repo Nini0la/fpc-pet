@@ -425,11 +425,15 @@ def _execute_tool(
     if isinstance(args, ProposeAction):
         from .continuation import PROPOSABLE
 
-        if args.tool_name not in PROPOSABLE or set(args.arguments) - set(
+        proposed = dict(args.arguments)
+        # The advertised target schema includes presentation metadata, not execution parameters.
+        nested_wording = proposed.pop("response_text", "")
+        if not isinstance(nested_wording, str) or len(nested_wording) > 1600:
+            return {"status": "rejected", "reason": "invalid_proposal"}
+        if args.tool_name not in PROPOSABLE or set(proposed) - set(
             TOOL_INPUTS[args.tool_name].model_fields
         ):
             return {"status": "rejected", "reason": "invalid_proposal"}
-        proposed = dict(args.arguments)
         if args.tool_name == "update_reminder" and not proposed.get("id"):
             from .continuation import referenced
             from .models import ReminderPlan

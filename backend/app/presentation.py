@@ -29,6 +29,19 @@ def confirmation(result):
         if effect and effect.get("status") == "rejected":
             return confirmation(effect)
         details = result.get("context", {})
+        if details.get("tool_name") == "schedule_reminder":
+            args = details.get("arguments", {})
+            topic = args.get("topic", details.get("title", "that task"))
+            interval = args.get("interval_seconds")
+            if args.get("mode") == "recurring" and interval:
+                unit = (f"{interval // 86400} day(s)" if interval % 86400 == 0 else
+                        f"{interval // 60} minute(s)" if interval % 60 == 0
+                        else f"{interval} seconds")
+                return (f"One option is a reminder to {topic} every {unit}, "
+                        f"up to {args.get('max_occurrences', 5)} times. "
+                        "Would that suit you? This is only a proposal, not a scheduled reminder.")
+            return (f"Would you like reminders to {topic}? We can choose the timing together. "
+                    "Nothing is scheduled yet.")
         if details.get("tool_name") == "create_commitment":
             title = details.get("arguments", {}).get("title", details.get("title", "that plan"))
             return f"Would you like me to save “{title}” as a commitment?"

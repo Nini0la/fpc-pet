@@ -164,7 +164,17 @@ def recent_operations(db, owner, cutoff):
                 continue
             outcomes.append(
                 {
-                    "tool": result.get("tool"),
+                    "operation": {
+                        "create_commitment": "save a commitment",
+                        "update_commitment": "change a commitment",
+                        "schedule_reminder": "retain or schedule a reminder",
+                        "update_reminder": "change a reminder",
+                        "manage_workflow": "update a reflection or vocabulary activity",
+                        "propose_action": "retain a proposed action",
+                        "resolve_proposal": "resolve a pending request",
+                        "save_project": "save a project", "save_idea": "save an idea",
+                        "update_thread": "change a saved thread",
+                    }.get(result.get("tool"), "process a request"),
                     "status": result.get("status"),
                     "reason": result.get("reason"),
                     "transition": result.get("transition"),

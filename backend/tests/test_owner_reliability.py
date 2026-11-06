@@ -249,3 +249,15 @@ def test_batch_cannot_exceed_budget_nest_or_self_approve(pg_client, scene):
     with main.SessionLocal() as db:
         assert db.scalar(select(Commitment)) is None
         assert db.scalar(select(ConversationProposal)).state == "proposed"
+
+
+def test_proposal_accepts_advertised_target_response_metadata(pg_client, scene):
+    main, gateway = scene
+    act(pg_client, gateway, "offer-meta", "Offer to track revising my portfolio, ask first.",
+        "propose_action", {"tool_name": "create_commitment", "title": "Track portfolio",
+                           "arguments": {"title": "Revise portfolio", "response_text": ""}})
+    with main.SessionLocal() as db:
+        pending = db.scalar(select(ConversationProposal))
+        assert pending and pending.state == "proposed"
+        assert "response_text" not in pending.arguments
+        assert db.scalar(select(Commitment)) is None
